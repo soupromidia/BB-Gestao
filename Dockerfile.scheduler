@@ -7,9 +7,10 @@
 # deveria ser offline. Doutrina: docs/doctrine/packaging.md, invariante 1.
 FROM alpine:3.20
 
-LABEL org.opencontainers.image.source="https://github.com/melgarafael/DeskcommCRM" \
+LABEL org.opencontainers.image.source="https://github.com/soupromidia/BB-Gestao" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.title="DeskcommCRM scheduler"
+      org.opencontainers.image.title="BB Gestão scheduler" \
+      org.opencontainers.image.vendor="Promidia"
 
 ARG APP_VERSION=dev
 ENV APP_VERSION=$APP_VERSION \

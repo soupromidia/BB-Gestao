@@ -15,11 +15,11 @@ set -euo pipefail
 # de qualquer 'cd' (step 2 pode entrar num repo clonado à parte).
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
-REPO_URL="${REPO_URL:-https://github.com/melgarafael/DeskcommCRM.git}"
+REPO_URL="${REPO_URL:-https://github.com/soupromidia/BB-Gestao.git}"
 # Uma constante, dois usos (o fim feliz e o fim travado) — e o comecar.sh tem a
 # gêmea. Link repetido à mão vira link divergente na primeira troca.
 COMUNIDADE_URL="https://lp-comunidade.automatiklabs.com.br"
-REPO_DIR="${REPO_DIR:-deskcommcrm}"
+REPO_DIR="${REPO_DIR:-bb-gestao}"
 COMPOSE="docker-compose.prod.yml"
 COMPOSE_TRAEFIK="docker-compose.traefik.yml"
 NONINTERACTIVE=0
@@ -1192,8 +1192,8 @@ fi
 VERSAO_ALVO="$(ultima_versao_publicada "$REPO_URL")"
 
 # A tag do git é condição NECESSÁRIA, não suficiente: ela nasce minutos antes
-# das imagens, e `deskcomm-worker`/`deskcomm-scheduler` só passaram a existir
-# depois das releases que já estão publicadas — `deskcomm-worker:1.2.1` nunca
+# das imagens, e `bb-gestao-worker`/`bb-gestao-scheduler` só passaram a existir
+# depois das releases que já estão publicadas — `bb-gestao-worker:1.2.1` nunca
 # vai existir, porque a v1.2.1 é passado. Sem esta conferência, o .env do
 # cliente receberia duas referências impossíveis e o kit as construiria aqui em
 # silêncio, do topo da main: app de uma release + worker de outro código.
@@ -1519,7 +1519,7 @@ _ref_final="${APP_IMAGE##*/}"
 case "$_ref_final" in
   *@sha256:*)
     # O operador pinou o app por DIGEST. Derivar a tag daí produziria
-    # `deskcomm-worker:<hash-do-app>` — uma referência que não existe em lugar
+    # `bb-gestao-worker:<hash-do-app>` — uma referência que não existe em lugar
     # nenhum, e o `pull` falharia com "manifest unknown" sem ninguém entender
     # por quê. Worker e scheduler vão para o canal estável, e o aviso sai porque
     # quem pinou por digest tinha um motivo e precisa saber que ele não se

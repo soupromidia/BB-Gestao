@@ -108,15 +108,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: deskcommcrm
+          - name: bb-gestao-app
             dockerfile: Dockerfile
-            title: DeskcommCRM
-          - name: deskcomm-worker
+            title: BB Gestão app
+          - name: bb-gestao-worker
             dockerfile: Dockerfile.worker
-            title: DeskcommCRM worker
-          - name: deskcomm-scheduler
+            title: BB Gestão worker
+          - name: bb-gestao-scheduler
             dockerfile: Dockerfile.scheduler
-            title: DeskcommCRM scheduler
+            title: BB Gestão scheduler
 
     steps:
       - uses: actions/checkout@v7
@@ -241,7 +241,7 @@ jobs:
             APP_VERSION=smoke
           # Mesmo escopo de cache do build-and-push: as camadas são idênticas,
           # então na prática este job reaproveita aquele build em vez de repeti-lo.
-          cache-from: type=gha,scope=deskcommcrm
+          cache-from: type=gha,scope=bb-gestao-app
 
       - name: O container chega a servir?
         run: |
@@ -351,7 +351,7 @@ jobs:
           # canal deixaria de ser o mesmo manifesto que a versão.
           dono=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           numero="${VERSAO#v}"
-          for img in deskcommcrm deskcomm-worker deskcomm-scheduler; do
+          for img in bb-gestao-app bb-gestao-worker bb-gestao-scheduler; do
             echo "::group::${img}"
             docker buildx imagetools create \
               --tag "${REGISTRY}/${dono}/${img}:stable" \

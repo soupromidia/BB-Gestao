@@ -14,14 +14,14 @@ Key facts:
 
 ## Docs
 
-- [README (Portuguese)](https://github.com/melgarafael/DeskcommCRM/blob/main/README.md): visão geral, quickstart, stack
-- [README (English)](https://github.com/melgarafael/DeskcommCRM/blob/main/README.en.md): project overview, quickstart, stack
-- [README (Spanish)](https://github.com/melgarafael/DeskcommCRM/blob/main/README.es.md): visión general en español
-- [Vision & positioning](https://github.com/melgarafael/DeskcommCRM/blob/main/VISION.md): what the project believes about self-improving AI agents
-- [Architecture](https://github.com/melgarafael/DeskcommCRM/blob/main/ARCHITECTURE.md): one-page architecture
-- [Setup guide](https://github.com/melgarafael/DeskcommCRM/blob/main/docs/SETUP.md): step-by-step setup of every integration
-- [Self-host on a VPS](https://github.com/melgarafael/DeskcommCRM/blob/main/docs/deploy-selfhost/README.md): docker compose deploy on any VPS
+- [README (Portuguese)](https://github.com/soupromidia/BB-Gestao/blob/main/README.md): visão geral, quickstart, stack
+- [README (English)](https://github.com/soupromidia/BB-Gestao/blob/main/README.en.md): project overview, quickstart, stack
+- [README (Spanish)](https://github.com/soupromidia/BB-Gestao/blob/main/README.es.md): visión general en español
+- [Vision & positioning](https://github.com/soupromidia/BB-Gestao/blob/main/VISION.md): what the project believes about self-improving AI agents
+- [Architecture](https://github.com/soupromidia/BB-Gestao/blob/main/ARCHITECTURE.md): one-page architecture
+- [Setup guide](https://github.com/soupromidia/BB-Gestao/blob/main/docs/SETUP.md): step-by-step setup of every integration
+- [Self-host on a VPS](https://github.com/soupromidia/BB-Gestao/blob/main/docs/deploy-selfhost/README.md): docker compose deploy on any VPS
 
 ## Repository
 
-- [GitHub](https://github.com/melgarafael/DeskcommCRM): source code, issues, discussions
+- [GitHub](https://github.com/soupromidia/BB-Gestao): source code, issues, discussions

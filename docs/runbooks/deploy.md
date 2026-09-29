@@ -67,8 +67,8 @@ commit → push → PR → merge na main → CI publica imagem → VPS puxa
    VPS não existe: o CI não o vê, some se a VPS for reconstruída, e é invisível
    pra qualquer outra pessoa.
 2. **PR e merge na `main`.** `publish-image.yml` dispara em push na `main` (ou
-   tag `v*`) e publica **três** imagens — `deskcommcrm`, `deskcomm-worker` e
-   `deskcomm-scheduler` — sempre na mesma versão. O build pesado roda nos
+   tag `v*`) e publica **três** imagens — `bb-gestao-app`, `bb-gestao-worker` e
+   `bb-gestao-scheduler` — sempre na mesma versão. O build pesado roda nos
    runners do GitHub, nunca na VPS do usuário.
 3. **Deploy na VPS.** Numa instalação real isto é `bash hostgator-setup-kit/update.sh`,
    não um `up -d` na mão: ele puxa a tag publicada, re-aplica o `baseline.sql`,
@@ -87,10 +87,10 @@ Só quando é preciso validar algo em produção **antes** de a imagem oficial
 existir (ex.: CI ainda rodando e um bug bloqueando o usuário).
 
 ```bash
-APP_IMAGE=deskcomm-app:local docker compose \
+APP_IMAGE=bb-gestao-app:local docker compose \
   -f docker-compose.prod.yml -f docker-compose.build.yml --env-file .env build app
 
-APP_IMAGE=deskcomm-app:local APP_PULL_POLICY=never docker compose \
+APP_IMAGE=bb-gestao-app:local APP_PULL_POLICY=never docker compose \
   -f docker-compose.prod.yml -f docker-compose.traefik.yml --env-file .env up -d app
 ```
 

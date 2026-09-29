@@ -7,7 +7,8 @@
 
 Esta é a **lei**. O procedimento operacional de deploy vive em
 [`../runbooks/deploy.md`](../runbooks/deploy.md); as decisões estruturais e o que foi
-recusado, em [`../adr/0001-packaging-e-distribuicao.md`](../adr/0001-packaging-e-distribuicao.md).
+recusado, em [`../adr/0001-packaging-e-distribuicao.md`](../adr/0001-packaging-e-distribuicao.md),
+com a distribuição deste fork superada pelo [`ADR-0002`](../adr/0002-distribuicao-promidia.md).
 Ao mudar um invariante aqui, atualize os dois na mesma sessão.
 
 | Se você quer… | Vá para |
@@ -15,7 +16,7 @@ Ao mudar um invariante aqui, atualize os dois na mesma sessão.
 | saber se sua mudança precisa virar imagem publicada | §Os 8 invariantes, nº 1 |
 | escolher a tag que uma instalação de cliente consome | §Política de canais |
 | lançar uma versão | §Checklist de release |
-| entender por que o namespace é `melgarafael` e não uma org | o ADR |
+| entender por que o namespace é `soupromidia` | ADR-0002 |
 
 ---
 
@@ -39,7 +40,7 @@ Se a resposta for "o cliente", a peça está errada e vira imagem publicada.
 
 | | **Nosso** | **Upstream** |
 |---|---|---|
-| Exemplos | `deskcommcrm`, `deskcomm-worker` | WAHA, Redis, Caddy, `serverless-redis-http`, `postgres` |
+| Exemplos | `bb-gestao-app`, `bb-gestao-worker` | WAHA, Redis, Caddy, `serverless-redis-http`, `postgres` |
 | Quem constrói | nosso CI, uma vez por versão | terceiro, fora do nosso controle |
 | O que fazemos | publicamos com procedência e versão | **referenciamos com tag pinada** (ver ressalva) |
 | O que **nunca** fazemos | publicar da máquina de um dev | republicar, embalar ou copiar |
@@ -73,7 +74,7 @@ worker:
 
 # CERTO — imagem publicada; o build fica ao lado, como escape
 worker:
-  image: ${WORKER_IMAGE:-ghcr.io/melgarafael/deskcomm-worker:stable}
+  image: ${WORKER_IMAGE:-ghcr.io/soupromidia/bb-gestao-worker:stable}
   build: { context: ., dockerfile: Dockerfile.worker }
 ```
 
@@ -104,12 +105,20 @@ OCI — no mínimo `source`, `revision`, `version`, `licenses` — e é constru�
   das três imagens não constrói. Ele existe porque a matriz gera um nome de check por imagem,
   e exigir os três pelo nome faria uma quarta imagem, um dia, escapar do gate em silêncio.
 
-  > **Ativado.** `imagens-ok` **é** required check da `main`. Medido em 2026-08-14:
+  > **Evidência histórica do upstream.** Em 2026-08-14, `imagens-ok` era required check da
+  > `main` do repositório original:
   >
   > ```console
   > $ gh api repos/melgarafael/DeskcommCRM/branches/main/protection \
   >     --jq '.required_status_checks.contexts|join(", ")'
   > verify, build-and-size, invariants, e2e, imagens-ok
+  > ```
+  >
+  > No fork da Promidia, o estado equivalente ainda precisa ser verificado e configurado:
+  >
+  > ```console
+  > $ gh api repos/soupromidia/BB-Gestao/branches/main/protection \
+  >     --jq '.required_status_checks.contexts|join(", ")'
   > ```
   >
   > Este parágrafo já disse as duas coisas erradas, em ordem: primeiro afirmou no presente
@@ -228,7 +237,7 @@ default que preserva o comportamento anterior**; se ela precisa existir, quem a 
 `GET /api/v1/health` responde a versão real da imagem em execução.
 
 > **Vale a partir da próxima release.** Nenhuma imagem já publicada carrega
-> `APP_VERSION` — medido: `docker run --rm ghcr.io/melgarafael/deskcommcrm:1.2.1 node -e
+> `APP_VERSION` — medido no upstream: `docker run --rm ghcr.io/melgarafael/deskcommcrm:1.2.1 node -e
 > 'console.log(process.env.APP_VERSION)'` → `undefined`. Todo o parque instalado hoje
 > responde `desconhecido`, que é a resposta honesta e o motivo de o fallback não ser mais
 > um número plausível. O item 9 do checklist de release reprova contra a 1.2.1 de propósito.
@@ -371,53 +380,38 @@ Um bump de versão **não pode** exigir:
 
 Verificável, na ordem. Nenhum item é "conferir se está tudo bem".
 
-A sonda do registry vem primeiro porque os itens 3 e 6 dependem dela — e porque `curl` cru no
-GHCR responde **401**, que não contém a versão procurada e por isso seria lido como aprovação
-pelo item 3. Um gate que aprova por erro de autenticação é pior que gate nenhum:
-
-```bash
-# Cole no shell antes de começar. Funciona anonimamente (o pacote é público).
-ghcr_status() {   # $1=imagem  $2=tag  → 200 existe | 404 não existe | 403 pacote privado
-  local t
-  t=$(curl -s "https://ghcr.io/token?scope=repository:melgarafael/$1:pull&service=ghcr.io" \
-      | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-  curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $t" \
-    -H 'Accept: application/vnd.oci.image.index.v1+json' \
-    "https://ghcr.io/v2/melgarafael/$1/manifests/$2"
-}
-```
-
-**403 não é "não existe": é pacote PRIVADO.** Todo pacote recém-criado no GHCR nasce privado,
-e repositório público não muda isso. Enquanto não for tornado público na mão (Package settings
-→ visibility), o `docker compose pull` de **toda VPS** é negado — e, como o `pull` de um
-serviço com `image:` falha a operação inteira, a atualização morre depois do `git checkout` e
-do banco. É o passo que mais trava na estreia de uma imagem nova.
+Os packages da Promidia são **privados**, conforme o ADR-0002. Não existe sonda anônima válida
+para este checklist: `401` ou `403` indicam ausência ou insuficiência de credencial e nunca
+provam que uma tag não existe. Instalações de produção precisarão autenticação read-only de
+menor privilégio no GHCR; a implementação operacional dessa autenticação será feita em etapa
+posterior da Sprint 0. Esta etapa não define token, secret nem comando de login e não altera a
+visibilidade dos packages.
 
 ```
 [ ] 1. CHANGELOG.md tem a seção da versão, com o que muda para quem já instalou
 [ ] 2. Nenhuma variável nova é obrigatória sem default (grep no diff de .env.example)
 [ ] 3. O número da versão NUNCA foi publicado antes:
        git tag --list 'vX.Y.Z'                     → vazio
-       ghcr_status deskcommcrm X.Y.Z               → 404
+       A verificação de colisão no GHCR exige acesso autenticado e será
+       operacionalizada em etapa posterior; 401/403 não aprovam este item
 [ ] 4. Os pins upstream foram revisitados: `waha`, `srh`, `redis`, `caddy`, `postgres`.
        Bumpar ou confirmar que ficam — congelar sem revisar é como o `srh` ficou
        três versões atrás sem ninguém decidir isso
 [ ] 5. `git tag vX.Y.Z && git push origin vX.Y.Z` — a partir de um commit da `main`
 [ ] 6. O run de publicação ficou verde:
        gh run list --workflow=publish-image.yml --limit 3
-[ ] 7. As TRÊS imagens existem E são públicas nesta versão:
-       for i in deskcommcrm deskcomm-worker deskcomm-scheduler; do
-         echo "$i: $(ghcr_status $i X.Y.Z)"; done      → 200 nas três
-       403 em alguma? Torne o pacote público ANTES de seguir
-[ ] 8. A imagem reporta a versão certa:
-       docker run --rm ghcr.io/melgarafael/deskcommcrm:X.Y.Z \
+[ ] 7. As TRÊS imagens privadas existem nesta versão, verificadas por CI ou operador
+       autenticado no GHCR. Sem credencial, ou diante de 401/403, INTERROMPA:
+       não torne o package público e não trate o resultado como ausência da imagem
+[ ] 8. Com acesso autenticado ao GHCR, a imagem reporta a versão certa:
+       docker run --rm ghcr.io/soupromidia/bb-gestao-app:X.Y.Z \
          node -e 'console.log(process.env.APP_VERSION)'   → X.Y.Z
 [ ] 9. `gh release create vX.Y.Z` com as notas do CHANGELOG
 [ ] 10. SÓ AGORA: `stable` e X.Y.Z são o MESMO digest, nas três imagens:
-        for i in deskcommcrm deskcomm-worker deskcomm-scheduler; do
+        for i in bb-gestao-app bb-gestao-worker bb-gestao-scheduler; do
           for t in X.Y.Z stable; do
             echo -n "$i:$t "; docker buildx imagetools inspect \
-              ghcr.io/melgarafael/$i:$t --format '{{.Manifest.Digest}}'; done; done
+              ghcr.io/soupromidia/$i:$t --format '{{.Manifest.Digest}}'; done; done
         → o par de cada imagem tem que bater
         Não bateu? Alguma coisa republicou depois do push da tag. NÃO siga:
         um canal apontando para build diferente da versão é o invariante 3
@@ -462,7 +456,7 @@ parque instalado** percorre, e é o único que a suíte de CI não exercita.
 
 | Camada | Artefato | Garante |
 |---|---|---|
-| CI (mecânico) | `imagens-ok` em `publish-image.yml` | imagem quebrada **reprova o merge** — é required check da `main`. Meça antes de confiar: `gh api repos/melgarafael/DeskcommCRM/branches/main/protection --jq '.required_status_checks.contexts'` |
+| CI (mecânico) | `imagens-ok` em `publish-image.yml` | no upstream, imagem quebrada reprovava o merge; no fork, o estado equivalente ainda precisa ser verificado e configurado: `gh api repos/soupromidia/BB-Gestao/branches/main/protection --jq '.required_status_checks.contexts'` |
 | CI (mecânico) | `tests/unit/packaging-artefato-do-cliente.test.ts` | serviço `build:`-only, pin upstream solto, `pull_policy` trocado e versão que mente reprovam |
 | CI (mecânico) | `tests/shell/update-guard.test.sh` | atualização que não pina as três imagens reprova |
 | CI (mecânico) | `hostgator-setup-kit/test-validators.sh` | instalação que nasce em tag móvel reprova |
@@ -474,7 +468,8 @@ parque instalado** percorre, e é o único que a suíte de CI não exercita.
 
 ## Decisões registradas
 
-**2026-08-13 — o namespace fica em `melgarafael`.** Uma consultoria externa recomendou criar
+**2026-08-13 — o namespace fica em `melgarafael` (decisão histórica do upstream, superada
+para este fork pelo ADR-0002).** Uma consultoria externa recomendou criar
 uma org `deskcommcrm` e migrar, sob a premissa de que o compose apontava para uma org
 desvinculada do repo. A premissa era falsa: o compose sempre apontou para
 `ghcr.io/melgarafael/deskcommcrm`, que é o que o CI publica e o que está gravado no `.env` de

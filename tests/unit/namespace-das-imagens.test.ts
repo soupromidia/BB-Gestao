@@ -53,7 +53,9 @@ const PUBLICA = fs.readFileSync(path.join(RAIZ, ".github/workflows/publish-image
 const ENV_EXEMPLO = fs.readFileSync(path.join(RAIZ, ".env.hostgator.example"), "utf8");
 
 /** O valor literal que este repositório publica. A âncora. */
-const NAMESPACE_DESTE_REPO = "ghcr.io/melgarafael";
+const NAMESPACE_DESTE_REPO = "ghcr.io/soupromidia";
+const REPOSITORIO_DESTE_REPO = "https://github.com/soupromidia/BB-Gestao";
+const IMAGENS_DESTE_REPO = ["bb-gestao-app", "bb-gestao-worker", "bb-gestao-scheduler"];
 
 /**
  * Um fork que publica as próprias imagens muda `IMG_NS` — e precisa mudar junto
@@ -120,6 +122,10 @@ describe("o namespace das imagens tem uma âncora, e uma só", () => {
     // sintoma chega só no `docker compose pull` da VPS do cliente.
     expect(imgNs().split("/")).toHaveLength(2);
   });
+
+  it("os três nomes são os packages aprovados no ADR-0002", () => {
+    expect(reposDoKit()).toEqual(IMAGENS_DESTE_REPO);
+  });
 });
 
 describe("o default do compose diz o mesmo que o kit", () => {
@@ -160,16 +166,16 @@ describe("o default do compose diz o mesmo que o kit", () => {
 
 describe("o kit aponta para o que o CI realmente publica", () => {
   it("os defaults de código e os labels de origem apontam para este repositório", () => {
-    const repo = "https://github.com/melgarafael/DeskcommCRM";
+    const repo = REPOSITORIO_DESTE_REPO;
     for (const script of ["install.sh", "comecar.sh"]) {
       const texto = fs.readFileSync(path.join(RAIZ, "hostgator-setup-kit", script), "utf8");
       expect(texto).toContain(`REPO_URL="\${REPO_URL:-${repo}.git}"`);
     }
     expect(COMUM).toContain(`local url="\${1:-${repo}.git}" ref`);
     for (const dockerfile of ["Dockerfile", "Dockerfile.worker", "Dockerfile.scheduler"]) {
-      expect(fs.readFileSync(path.join(RAIZ, dockerfile), "utf8")).toContain(
-        `org.opencontainers.image.source="${repo}"`,
-      );
+      const conteudo = fs.readFileSync(path.join(RAIZ, dockerfile), "utf8");
+      expect(conteudo).toContain(`org.opencontainers.image.source="${repo}"`);
+      expect(conteudo).toContain('org.opencontainers.image.vendor="Promidia"');
     }
   });
 
@@ -198,19 +204,20 @@ describe("o kit aponta para o que o CI realmente publica", () => {
         log=$(mktemp)
         trap 'rm -f "$log"' EXIT
         # O dublê registra em arquivo porque a função captura stdout do curl.
-        ghcr_status deskcommcrm 1.2.3
+        ghcr_status "$2" 1.2.3
         printf '\\n'
         cat "$log"
       `,
           "teste",
           namespace ?? "",
+          IMAGENS_DESTE_REPO[0] ?? "",
         ],
         { cwd: RAIZ, encoding: "utf8" },
       );
       expect(saida.trim().split("\n")).toEqual([
         "200",
-        `https://${registry}/token?scope=repository:${owner}/deskcommcrm:pull&service=${registry}`,
-        `https://${registry}/v2/${owner}/deskcommcrm/manifests/1.2.3`,
+        `https://${registry}/token?scope=repository:${owner}/${IMAGENS_DESTE_REPO[0]}:pull&service=${registry}`,
+        `https://${registry}/v2/${owner}/${IMAGENS_DESTE_REPO[0]}/manifests/1.2.3`,
       ]);
     },
   );
@@ -233,6 +240,69 @@ describe("o kit aponta para o que o CI realmente publica", () => {
     const naMatriz = [...PUBLICA.matchAll(/^\s{10}- name: (\S+)$/gm)].map((m) => m[1]);
     expect(naMatriz.length, "a matriz de publish-image.yml não tem mais três imagens").toBe(3);
     expect([...naMatriz].sort()).toEqual([...reposDoKit()].sort());
+  });
+});
+
+describe("catraca: identidade operacional do upstream não volta", () => {
+  const ARQUIVOS_OPERACIONAIS = [
+    "Dockerfile",
+    "Dockerfile.worker",
+    "Dockerfile.scheduler",
+    "docker-compose.prod.yml",
+    "docker-compose.build.yml",
+    ".env.hostgator.example",
+    ".github/workflows/publish-image.yml",
+    ".github/workflows/release.yml",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    "hostgator-setup-kit/_common.sh",
+    "hostgator-setup-kit/install.sh",
+    "hostgator-setup-kit/comecar.sh",
+    "hostgator-setup-kit/diagnostico.sh",
+    "hostgator-setup-kit/README.md",
+    "hostgator-setup-kit/CLAUDE.md",
+    "scripts/cortar-release.ts",
+    "README.md",
+    "README.en.md",
+    "README.es.md",
+    "docs/deploy-hostgator/README.md",
+    "docs/deploy-selfhost/README.md",
+    "docs/runbooks/cloudpanel.md",
+    "docs/runbooks/deploy.md",
+    ".agents/skills/deskcomm-instalar/SKILL.md",
+    ".agents/skills/deskcomm-instalar/references/scripts-do-kit.md",
+    ".agents/skills/deskcomm-instalar/references/problemas-e-armadilhas.md",
+    ".claude/skills/deskcomm-instalar/SKILL.md",
+    ".claude/skills/deskcomm-instalar/references/scripts-do-kit.md",
+    ".claude/skills/deskcomm-instalar/references/problemas-e-armadilhas.md",
+    "SECURITY.md",
+    "public/llms.txt",
+  ];
+
+  const PADROES_PROIBIDOS = [
+    /ghcr\.io\/melgarafael/,
+    /github\.com\/melgarafael\/DeskcommCRM/,
+    /^\s*image:.*(?:\/deskcommcrm|\/deskcomm-worker|\/deskcomm-scheduler):/m,
+    /^IMG_(?:APP|WORKER|SCHEDULER)="\$\{IMG_NS\}\/(?:deskcommcrm|deskcomm-worker|deskcomm-scheduler)"$/m,
+    /^\s*- name: (?:deskcommcrm|deskcomm-worker|deskcomm-scheduler)$/m,
+    /for img in deskcommcrm deskcomm-worker deskcomm-scheduler/,
+    /\bdeskcomm-app(?=[:\s])/,
+  ];
+
+  it.each(ARQUIVOS_OPERACIONAIS)("%s não referencia a distribuição original", (arquivo) => {
+    const conteudo = fs.readFileSync(path.join(RAIZ, arquivo), "utf8");
+    const executavel = conteudo
+      .split("\n")
+      .filter((linha) => {
+        const inicio = linha.trimStart();
+        return !inicio.startsWith("#") && !inicio.startsWith("//") && !inicio.startsWith("*");
+      })
+      .join("\n");
+    for (const padrao of PADROES_PROIBIDOS) {
+      expect(executavel, `${arquivo} ainda contém referência operacional ao upstream: ${padrao}`).not.toMatch(
+        padrao,
+      );
+    }
   });
 });
 

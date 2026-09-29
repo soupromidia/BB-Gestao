@@ -13,20 +13,14 @@ name: e2e
 # limitador de login do produto é por IP (60/300s) e no CI todos os specs vêm do
 # mesmo 127.0.0.1. Ver o comentário do passo "E2E — parte 1 de 3".
 #
-# É CHECK OBRIGATÓRIO. A régua, para reconferir em vez de acreditar nesta linha:
-#   $ gh api repos/melgarafael/DeskcommCRM/branches/main/protection \
-#       --jq '.required_status_checks.contexts|join(", ")'
-#   verify, build-and-size, invariants, e2e, imagens-ok   # medido em 2026-08-14
+# No upstream, este job era check obrigatório. A medição histórica de 2026-08-14 foi:
+#   verify, build-and-size, invariants, e2e, imagens-ok
 #
-# São CINCO. A versão anterior deste bloco colava a saída de 2026-08-12, com
-# quatro — `imagens-ok` virou obrigatório em 2026-08-13, um dia depois. Trocar
-# uma afirmação vencida por outra vencida é o mesmo defeito, e o commit
-# bcd88c30 desta branch existe justamente por causa dele: quem lê aqui para
-# saber contra o que medir concluiria que imagem quebrada não segura merge.
-# Este cabeçalho afirmou o contrário ("NÃO-BLOQUEANTE por ausência… quando N
-# execuções seguidas passarem limpas, adicionar aos obrigatórios") por tempo
-# demais depois de a promoção ter acontecido — e quem lesse isso mediria o custo
-# de uma mudança contra a régua errada.
+# No fork da Promidia, o estado equivalente ainda precisa ser verificado e configurado:
+#   $ gh api repos/soupromidia/BB-Gestao/branches/main/protection \
+#       --jq '.required_status_checks.contexts|join(", ")'
+# Não atribua ao fork a saída histórica do upstream: até essa configuração ser
+# confirmada, o workflow existir não prova que ele bloqueia merge.
 #
 # O job falha honestamente: a primeira versão usava `continue-on-error: true` no
 # job inteiro e reportou VERDE com o `supabase start` quebrado e zero teste
@@ -890,10 +884,10 @@ jobs:
             test-results/
           retention-days: 7
 
-  # O NOME DESTE JOB É O CHECK OBRIGATÓRIO, e é por isso que ele existe.
+  # O NOME DESTE JOB É O CHECK AGREGADOR esperado pela proteção configurada no upstream.
   #
-  # A branch protection da `main` exige um check chamado exatamente `e2e`
-  # (medido: verify, build-and-size, invariants, e2e, imagens-ok). Jobs de
+  # A branch protection histórica do upstream exigia um check chamado exatamente `e2e`
+  # (medido lá: verify, build-and-size, invariants, e2e, imagens-ok). Jobs de
   # matrix se chamam `e2e-parte (1)` e `e2e-parte (2)` — se o job das partes
   # tivesse ficado com o nome `e2e`, a proteção passaria a esperar para sempre
   # um check que nenhum run produz, e NENHUM PR mergearia. Este agregador é o

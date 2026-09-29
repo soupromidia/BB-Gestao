@@ -75,7 +75,7 @@ function corpo(yml: string, nome: string): string {
     .join("\n");
 }
 
-const IMAGENS = ["deskcommcrm", "deskcomm-worker", "deskcomm-scheduler"];
+const IMAGENS = ["bb-gestao-app", "bb-gestao-worker", "bb-gestao-scheduler"];
 
 describe("o canal `stable` move em bloco", () => {
   it("o instrumento está vivo: enxerga os jobs de publish-image.yml", () => {

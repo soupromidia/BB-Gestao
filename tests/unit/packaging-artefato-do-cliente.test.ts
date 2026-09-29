@@ -231,7 +231,7 @@ describe("packaging — o artefato que o cliente instala", () => {
 
   it("o workflow publica as três imagens e injeta APP_VERSION", () => {
     const wf = fs.readFileSync(path.join(RAIZ, ".github/workflows/publish-image.yml"), "utf8");
-    for (const imagem of ["deskcommcrm", "deskcomm-worker", "deskcomm-scheduler"]) {
+    for (const imagem of ["bb-gestao-app", "bb-gestao-worker", "bb-gestao-scheduler"]) {
       expect(wf, `publish-image.yml não publica '${imagem}'`).toContain(`name: ${imagem}`);
     }
     expect(wf, "publish-image.yml não passa APP_VERSION como build-arg").toContain(

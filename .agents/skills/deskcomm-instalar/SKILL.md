@@ -91,8 +91,8 @@ cá. Registradores, passo a passo: `references/dominio-e-dns.md`.
 ### 5. Rodar o instalador — no modo interativo
 
 ```bash
-git clone https://github.com/melgarafael/DeskcommCRM.git deskcommcrm   # se ainda não clonou
-cd deskcommcrm
+git clone https://github.com/soupromidia/BB-Gestao.git bb-gestao   # se ainda não clonou
+cd bb-gestao
 bash hostgator-setup-kit/install.sh
 ```
 

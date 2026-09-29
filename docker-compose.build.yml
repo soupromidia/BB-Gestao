@@ -17,7 +17,7 @@ services:
       # não veio de release nenhuma.
       args:
         APP_VERSION: ${APP_VERSION:-local}
-    image: ${APP_IMAGE:-deskcomm-app:local}
+    image: ${APP_IMAGE:-bb-gestao-app:local}
     pull_policy: never
 
   # O worker e o scheduler já têm `build:` no compose de produção (é o escape
@@ -29,12 +29,12 @@ services:
     build:
       args:
         APP_VERSION: ${APP_VERSION:-local}
-    image: ${WORKER_IMAGE:-deskcomm-worker:local}
+    image: ${WORKER_IMAGE:-bb-gestao-worker:local}
     pull_policy: never
 
   scheduler:
     build:
       args:
         APP_VERSION: ${APP_VERSION:-local}
-    image: ${SCHEDULER_IMAGE:-deskcomm-scheduler:local}
+    image: ${SCHEDULER_IMAGE:-bb-gestao-scheduler:local}
     pull_policy: never

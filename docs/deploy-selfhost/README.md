@@ -23,7 +23,7 @@
 ## 1. Clonar e configurar
 
 ```bash
-git clone https://github.com/melgarafael/DeskcommCRM.git && cd DeskcommCRM
+git clone https://github.com/soupromidia/BB-Gestao.git && cd BB-Gestao
 cp .env.hostgator.example .env   # o template de produção (o .env.example é o de dev)
 ```
 
