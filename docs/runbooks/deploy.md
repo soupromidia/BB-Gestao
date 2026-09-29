@@ -1,8 +1,13 @@
 # Runbook — Deploy em produção (VPS)
 
-O caminho normal de deploy **não constrói nada na VPS**: o CI publica a imagem no
+O caminho alvo de deploy **não constrói nada na VPS**: o CI publica a imagem no
 GHCR e a VPS só puxa. Construir localmente é exceção de emergência, e tem custo —
 está documentado no fim.
+
+> **Estado da Sprint 0:** a Etapa 3 termina na publicação privada do trio
+> `sha-<SHA completo>`. Release SemVer, `stable` e autenticação read-only da VPS no GHCR
+> ainda não estão operacionais. Portanto, a parte de VPS deste runbook continua como alvo
+> das etapas seguintes e não deve ser usada para consumir os packages da Promidia ainda.
 
 ---
 
@@ -57,27 +62,25 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<DOMAIN>/
 
 ---
 
-## 3. Fluxo completo (do código à produção)
+## 3. Fluxo ativo da Etapa 3 (do código ao GHCR)
 
 ```
-commit → push → PR → merge na main → CI publica imagem → VPS puxa
+commit → push → PR → merge na main → CI publica e valida o trio sha-<SHA completo>
 ```
 
 1. **Commit + push** numa branch de feature. Trabalho que fica só no disco da
    VPS não existe: o CI não o vê, some se a VPS for reconstruída, e é invisível
    pra qualquer outra pessoa.
-2. **PR e merge na `main`.** `publish-image.yml` dispara em push na `main` (ou
-   tag `v*`) e publica **três** imagens — `bb-gestao-app`, `bb-gestao-worker` e
-   `bb-gestao-scheduler` — sempre na mesma versão. O build pesado roda nos
-   runners do GitHub, nunca na VPS do usuário.
-3. **Deploy na VPS.** Numa instalação real isto é `bash hostgator-setup-kit/update.sh`,
-   não um `up -d` na mão: ele puxa a tag publicada, re-aplica o `baseline.sql`,
-   faz backup antes e grava as três imagens no `.env`.
-
-> **`latest` não é a última release.** Ele é publicado a partir da branch default, então
-> segue o **topo da `main`** — código ainda não lançado. Quem quer a última release usa
-> `stable`; quem opera um cliente usa o número da versão. Ver
-> [`../doctrine/packaging.md`](../doctrine/packaging.md).
+2. **PR e merge na `main`.** `publish-image.yml` publica **três** imagens privadas —
+   `bb-gestao-app`, `bb-gestao-worker` e `bb-gestao-scheduler` — com a mesma tag
+   `sha-<SHA completo>`, em `linux/amd64`. Cada imagem SHA existente e compatível é
+   reutilizada; somente as ausentes são construídas. O check `imagens-ok` só aprova depois
+   da matriz, do smoke da imagem publicada/reutilizada do app e da validação remota dos
+   labels OCI. Ele pode ser configurado como required check, mas esse estado da branch
+   protection do fork ainda precisa ser verificado/configurado externamente.
+3. **Fim da Etapa 3.** Não há deploy na VPS neste fluxo. SemVer e `stable` serão promoção
+   do mesmo artefato, sem rebuild, na Etapa 4. O pull autenticado da VPS será configurado
+   posteriormente. `latest` não é publicado por este fork.
 
 ---
 

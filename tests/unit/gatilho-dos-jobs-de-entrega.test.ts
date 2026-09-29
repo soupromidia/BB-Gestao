@@ -10,8 +10,8 @@
  *     -    if: github.event_name == 'push'
  *     +    if: github.event_name == 'push' && false
  *
- * — desliga a cadeia inteira de release e sai VERDE nos cinco checks
- * obrigatórios. Foi o que apareceu triando o PR #458: um contribuidor de fork
+ * — desliga a cadeia inteira de release e sai VERDE nos cinco checks que eram
+ * obrigatórios no upstream medido. Foi o que apareceu triando o PR #458: um contribuidor de fork
  * tinha (com razão, no fork dele) desligado os jobs de release, e a adaptação
  * pegou carona no PR de volta. Mergeado, a sequência seria: merge verde na
  * `main` → `cortar-tag` pulado → nenhuma tag, nenhuma imagem, `stable` parado →
@@ -37,7 +37,7 @@
  * inclusive os que não têm `if:` nenhum, que é a maioria e é o estado seguro.
  * Job novo que não esteja aqui reprova, e job que sai daqui reprova também.
  * Uma lista de suspeitos protegeria os jobs de hoje e nenhum dos de amanhã;
- * o `skipped`-lido-como-sucesso vale para QUALQUER check obrigatório, não só
+ * o `skipped`-lido-como-sucesso vale para QUALQUER check configurado como obrigatório, não só
  * para os dois do `release.yml`.
  *
  * ## Não há parser YAML nas dependências
@@ -79,54 +79,31 @@ const GATILHO_ESPERADO: Record<string, { condicao: string | null; efeito: string
       "tag nasce, nenhuma imagem sai, `stable` congela, e a descoberta é um cliente " +
       "rodando `update.sh` e não recebendo nada.",
   },
-  "publish-image.yml::a-tag-veio-da-main": {
-    condicao: null,
-    efeito:
-      "Esta é a trava de procedência: nenhuma tag publica sem estar contida na `main`. " +
-      "Ela é SEM `if:` de propósito — pulada, ela deixaria `build-and-push` pulado junto " +
-      "e o `imagens-ok` leria `skipped` como reprovação.",
-  },
   "publish-image.yml::build-and-push": {
     condicao: null,
     efeito:
-      "Este job PUBLICA as três imagens no GHCR — é o artefato que o self-hoster instala. " +
-      "Desligá-lo faz a tag existir sem imagem por trás dela.",
+      "Este job valida ou constrói cada imagem, publica somente as ausentes na main e " +
+      "prova o boot do app no mesmo membro da matriz. Desligá-lo deixa a cadeia sem " +
+      "artefato promovível e sem smoke.",
   },
-  "publish-image.yml::imagem-do-app-sobe": {
+  "publish-image.yml::validar-trio-sha": {
     condicao: null,
     efeito:
-      "Este job prova que a imagem do app BOOTA, não só que ela constrói. Desligá-lo " +
-      "devolve o defeito que derrubou a produção: imagem publicada que morre no " +
-      "`docker compose up` da VPS.",
-  },
-  // A promoção do canal `stable`, que o PR #498 tirou de dentro da matriz: lá,
-  // cada uma das três imagens movia o canal sozinha ao terminar, e um `stable`
-  // podia apontar para um app novo com worker velho. Desligá-lo aqui não deixa
-  // rastro nenhum: o job vira `skipped`, as três imagens publicam, a tag sai, e
-  // o canal simplesmente NÃO ANDA — quem instala pelo default do compose fica na
-  // versão anterior sem que nada tenha ficado vermelho.
-  "publish-image.yml::promover-stable": {
-    condicao:
-      "github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')",
-    efeito:
-      "As três condições barram um caminho medido cada uma. Sem `push`, um dispatch numa " +
-      "release ANTIGA faria `stable` REGREDIR, e todo self-hoster no default do compose " +
-      "sofreria downgrade silencioso no próximo `up -d` — app velho sobre banco já migrado. " +
-      "Sem `tag`, um dispatch numa branch moveria o canal. Sem o `v`, uma tag de teste o move.",
+      "Este job prova no GHCR privado que as três tags existem, são amd64 e carregam " +
+      "o mesmo SHA completo nos labels OCI. Eventos sem publicação saem zero dentro do step.",
   },
 
   "publish-image.yml::imagens-ok": {
     condicao: "always()",
     efeito:
-      "Este é o check obrigatório `imagens-ok`, a fachada que a branch protection exige. " +
-      "Ele precisa de `always()` para poder LER `skipped` dos `needs` e reprovar — e " +
-      "desligá-lo (`always() && false`) o torna `skipped` ele mesmo, que a branch " +
-      "protection lê como satisfeito.",
+      "Esta é a fachada `imagens-ok`, disponível para ser configurada como required check. " +
+      "No fork, esse estado ainda precisa ser verificado/configurado externamente. Ela usa " +
+      "`always()` para LER `skipped` dos `needs` e reprovar em vez de ficar verde.",
   },
 
-  // --- os outros checks obrigatórios ------------------------------------------
-  // Mesmo mecanismo, mesmo desfecho: `skipped` conta como check satisfeito.
-  // Desligar qualquer um destes faz o PR entrar sem ter sido testado.
+  // --- demais checks medidos no upstream --------------------------------------
+  // No fork, o estado da branch protection precisa ser verificado externamente.
+  // Se configurado como required, `skipped` conta como check satisfeito.
   "ci.yml::verify": {
     condicao: null,
     efeito: "Este é o check obrigatório `verify` (typecheck + lint + test:unit).",

@@ -11,6 +11,25 @@ recusado, em [`../adr/0001-packaging-e-distribuicao.md`](../adr/0001-packaging-e
 com a distribuição deste fork superada pelo [`ADR-0002`](../adr/0002-distribuicao-promidia.md).
 Ao mudar um invariante aqui, atualize os dois na mesma sessão.
 
+### Estado vigente da distribuição Promidia (Sprint 0, Etapa 3)
+
+O fluxo ativo deste fork é `push` na `main` → validação/reuso individual das imagens já
+existentes → build somente das ausentes → publicação no GHCR privado com a tag imutável
+`sha-<SHA completo>` → smoke do app → validação remota do trio. Os packages são:
+
+- `ghcr.io/soupromidia/bb-gestao-app`;
+- `ghcr.io/soupromidia/bb-gestao-worker`;
+- `ghcr.io/soupromidia/bb-gestao-scheduler`.
+
+Esta etapa **não publica** `latest`, `stable` ou SemVer. A promoção do mesmo artefato SHA
+para SemVer e o avanço conjunto de `stable` pertencem à Etapa 4 e não podem reconstruir a
+imagem. O pull autenticado de produção nos packages privados pertence a etapa posterior;
+nenhuma VPS deve tratar a publicação desta etapa como fluxo de deploy já habilitado.
+
+As referências abaixo a releases e instalações legadas registram a doutrina herdada e o
+alvo das etapas seguintes. Em caso de conflito operacional durante a Sprint 0, este bloco e
+o [`ADR-0002`](../adr/0002-distribuicao-promidia.md) prevalecem.
+
 | Se você quer… | Vá para |
 |---|---|
 | saber se sua mudança precisa virar imagem publicada | §Os 8 invariantes, nº 1 |
@@ -74,7 +93,7 @@ worker:
 
 # CERTO — imagem publicada; o build fica ao lado, como escape
 worker:
-  image: ${WORKER_IMAGE:-ghcr.io/soupromidia/bb-gestao-worker:stable}
+  image: ghcr.io/soupromidia/bb-gestao-worker:sha-<SHA completo>
   build: { context: ., dockerfile: Dockerfile.worker }
 ```
 
@@ -102,8 +121,9 @@ OCI — no mínimo `source`, `revision`, `version`, `licenses` — e é constru�
   Rastreabilidade:** sem `org.opencontainers.image.revision` não existe resposta para "que
   código está rodando neste cliente?", e o suporte vira adivinhação.
 - **Verificação:** o job **`imagens-ok`** de `publish-image.yml` reprova quando qualquer uma
-  das três imagens não constrói. Ele existe porque a matriz gera um nome de check por imagem,
-  e exigir os três pelo nome faria uma quarta imagem, um dia, escapar do gate em silêncio.
+  das três imagens não constrói nem é reconhecida como um SHA existente válido. Ele existe
+  porque a matriz gera um nome de check por imagem, e exigir os três pelo nome faria uma
+  quarta imagem, um dia, escapar do gate em silêncio.
 
   > **Evidência histórica do upstream.** Em 2026-08-14, `imagens-ok` era required check da
   > `main` do repositório original:
@@ -139,8 +159,19 @@ OCI — no mínimo `source`, `revision`, `version`, `licenses` — e é constru�
 
 ### 3. Instalação de cliente nunca aponta para tag móvel
 
-`install.sh` e `update.sh` gravam no `.env` do cliente uma **tag de versão** (`1.2.1`), nunca
-`latest`, `main` ou `stable`.
+Este é o alvo da cadeia completa, ainda não o estado operacional da Etapa 3. A Promidia só
+publica `sha-<SHA completo>` neste momento, e a autenticação read-only da VPS será configurada
+posteriormente. Portanto, nenhuma instalação deve consumir os packages privados ainda.
+
+Os caminhos legados de `install.sh`, `update.sh` e dos templates ainda contêm a política do
+upstream para tags numéricas, `stable` e fallback em `latest`. Eles permanecem por decisão de
+escopo até a Etapa 5; não descrevem tags produzidas pelo workflow atual.
+
+No fluxo final, a instalação gravará no `.env` uma tag SemVer imutável promovida do SHA já
+validado, nunca um canal móvel.
+
+<details>
+<summary>Histórico do upstream que motivou o invariante</summary>
 
 Duas exceções, ambas deliberadas e ambas com aviso na tela — porque falhar fechado aqui
 seria recusar instalar por não conseguir resolver um número:
@@ -166,9 +197,10 @@ vai existir porque a v1.2.1 é anterior à criação desse pacote.
   Isso inverte a expectativa que o nome cria, e é a razão de o canal `stable` existir
   (§Política de canais).
 
-  A regra `enable={{is_default_branch}}` do `metadata-action`, sozinha, **não** entrega isso:
-  ela é verdadeira também num push de tag, então toda release movia `latest` junto e o canal
-  oscilava entre os dois significados. O workflow prende `latest` a `ref_type == 'branch'`.
+  A regra `enable={{is_default_branch}}` do `metadata-action`, sozinha, **não** entregava isso:
+  ela era verdadeira também num push de tag, então toda release movia `latest` junto e o canal
+  oscilava entre os dois significados. O workflow do upstream prendia `latest` a
+  `ref_type == 'branch'`.
 - **Verificação:** duas, porque são dois caminhos distintos e o primeiro passou verde por
   meses sem nenhum. `hostgator-setup-kit/test-validators.sh` roda o `install.sh` de verdade
   contra um remoto local com tags conhecidas e cobra o `.env` pinado na maior delas (a ordem
@@ -176,17 +208,30 @@ vai existir porque a v1.2.1 é anterior à criação desse pacote.
   `tests/shell/update-guard.test.sh` prova que o `update.sh` grava as **três** imagens na
   mesma versão, no `.env`, sem duplicar chave.
 
+</details>
+
 ### 4. Tag de versão é imutável; canal é móvel
 
-`vX.Y.Z` (e a imagem `X.Y.Z`) aponta para um digest **para sempre**. Republicar uma versão é
-proibido — corrige-se com `X.Y.Z+1`. Só `latest`, `main`, `stable` e `X.Y` se movem.
+Na Etapa 3, `sha-<SHA completo>` identifica o commit e nunca é reapontada. Cada membro da
+matriz consulta sua própria referência antes do build. Se ela não existe, publica uma vez; se
+existe com os labels OCI e a plataforma esperados, reutiliza sem build nem push. Referência
+existente incompatível, ou falha que não prove ausência, encerra aquele membro sem publicar.
+Isso permite recuperar publicação parcial em `Re-run failed jobs` e `Re-run all jobs`.
+
+Na Etapa 4, `vX.Y.Z` e a imagem `X.Y.Z` deverão apontar para esse mesmo artefato **para
+sempre**, por promoção sem rebuild. Republicar uma versão será proibido; `stable` será o único
+canal móvel previsto e só poderá avançar com o trio validado. `latest`, `main` e `X.Y` não fazem
+parte da política do fork.
 
 - **Por quê:** a imutabilidade da tag é o que torna a pinagem do invariante 3 uma garantia em
   vez de uma esperança. Se `1.2.1` puder ser reescrita, todo cliente "pinado" continua exposto
   — só que agora com uma falsa sensação de controle, que é pior que nenhum controle.
-- **Verificação:** o workflow publica `type=semver` apenas a partir de tag `v*`, e tag git não
-  se reaponta. A dívida conhecida: o GHCR não impõe imutabilidade por configuração — a
-  garantia é de processo, e por isso o checklist de release proíbe reuso de número.
+- **Verificação atual:** `build-and-push` valida/reutiliza cada imagem antes de decidir
+  construir; `validar-trio-sha` confere no GHCR que app, worker e scheduler têm a mesma
+  `revision`, `version`, origem, identidade e plataforma; `imagens-ok` só aprova quando
+  matriz, smoke e validação remota terminam com sucesso. O workflow disponibiliza esse check;
+  torná-lo obrigatório no fork depende da branch protection externa e ainda precisa ser
+  verificado/configurado.
 
 ### 5. `pull_policy` acompanha a mutabilidade da tag
 
@@ -333,13 +378,13 @@ mesma VPS **recusa** mexer, e diz por quê.
 
 ## Política de canais
 
-| Tag | Quem consome | Move? | `pull_policy` | O que significa |
-|---|---|---|---|---|
-| `1.2.1` | **toda instalação de cliente** | **não** | `missing` | uma release, para sempre |
-| `1.2` | ninguém instala | sim | — | conveniência de teste de patch |
-| `stable` | implementador validando antes de atualizar clientes | sim | `always` | a **última release** publicada |
-| `latest` | vitrine, avaliação, quem acompanha o projeto | sim | `always` | **topo da `main`** — código não lançado |
-| `main` | mantenedor e CI | sim | `always` | idêntico a `latest`, nome explícito |
+| Tag | Estado no fork | Move? | O que significa |
+|---|---|---|---|
+| `sha-<SHA completo>` | **ativa na Etapa 3** | **não** | artefato validado de um commit da `main`, promovível sem rebuild |
+| `X.Y.Z` | futura, Etapa 4 | **não** | release SemVer apontando para o artefato SHA já validado |
+| `stable` | futuro, Etapa 4 | sim, somente em bloco | trio da última release validada |
+| `latest` | **não publicado** | — | proibido pela decisão do ADR-0002 |
+| `main` | **não publicado** | — | não é canal de imagem neste fork |
 
 **A regra de ouro:** *instalação que alguém pagou aponta para número de versão. Ponto.*
 
@@ -349,10 +394,9 @@ atualizar" para o acaso: um reboot, um `up -d` de manutenção, uma queda de ene
 desses eventos é um momento em que alguém escolheu correr o risco de uma versão nova, e
 nenhum deles avisa quando dá errado. Quem descobre é o cliente, por telefone.
 
-**`latest` não é o canal estável, apesar do nome.** Essa é a pegadinha desta configuração: ele
-segue a `main`. `stable` existe para dar nome ao que as pessoas *acham* que `latest` é. E
-`latest` **não muda de significado** — mudá-lo faria clientes que hoje o consomem sofrerem um
-downgrade silencioso no próximo `up -d`, com app antigo sobre banco já migrado.
+O histórico do upstream usava `latest` para o topo da `main`; o fork não preserva esse canal.
+Durante a transição, referências a `stable` ou a tags numéricas nos scripts legados não
+significam que esses canais já sejam publicados pela Promidia.
 
 ---
 
@@ -377,6 +421,10 @@ Um bump de versão **não pode** exigir:
 ---
 
 ## Checklist de release
+
+> **Ainda não operacional no fork.** A Etapa 3 produz somente `sha-<SHA completo>`. Este
+> checklist será alinhado ao fluxo de promoção sem rebuild na Etapa 4; não crie tag, release
+> ou `stable` com o workflow atual.
 
 Verificável, na ordem. Nenhum item é "conferir se está tudo bem".
 

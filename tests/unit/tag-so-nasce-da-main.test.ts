@@ -4,10 +4,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * A tag `vX.Y.Z` é o gatilho de atualização do parque instalado inteiro:
- * `hostgator-setup-kit/agent.sh` oferece a MAIOR tag `v*` a toda VPS, e o
- * `update.sh` puxa a imagem por aquele número. Este arquivo vigia as duas
- * propriedades que impedem que ela vire uma porta aberta.
+ * Na Etapa 3, somente um push da `main` pode publicar `sha-<commit>`, e a tag
+ * imutável não pode ser reapontada. As guardas históricas de criação de tag
+ * SemVer em `release.yml` permanecem documentadas aqui para a Etapa 4, mas não
+ * disparam o workflow de imagens atual.
  */
 const RAIZ = process.cwd();
 const publish = fs.readFileSync(path.join(RAIZ, ".github/workflows/publish-image.yml"), "utf8");
@@ -22,37 +22,25 @@ function job(yml: string, nome: string): string {
   return linhas.slice(i, fim === -1 ? undefined : fim).join("\n");
 }
 
-describe("nenhuma tag publica sem estar contida na main", () => {
-  it("o job da trava existe", () => {
-    expect(job(publish, "a-tag-veio-da-main"), "a trava de procedência sumiu de publish-image.yml").not.toBe("");
+describe("a imagem sha nasce somente de um commit da main", () => {
+  it("cada membro decide pelo próprio estado antes do único build", () => {
+    const t = job(publish, "build-and-push");
+    expect(t).toContain("id: imagem-sha");
+    expect(t).toContain("docker pull --platform linux/amd64");
+    expect(t).toContain("if: steps.imagem-sha.outputs.reutilizar != 'true'");
+    expect(t).toContain('echo "reutilizar=true" >> "${GITHUB_OUTPUT}"');
+    expect(t).toContain('echo "reutilizar=false" >> "${GITHUB_OUTPUT}"');
+    expect(publish.match(/uses: docker\/build-push-action@v7/g)).toHaveLength(1);
   });
 
-  it.each(["build-and-push", "imagem-do-app-sobe"])(
-    "%s depende da trava — senão publica antes de ela responder",
-    (nome) => {
-      expect(job(publish, nome)).toMatch(/needs:\s*\[[^\]]*a-tag-veio-da-main/);
-    },
-  );
-
-  it("a trava aceita EXATAMENTE `identical` e `behind`, e nada mais", () => {
-    const t = job(publish, "a-tag-veio-da-main");
-    expect(t).toContain("compare/main...");
-
-    // Prende o CONJUNTO aceito, não a ausência de uma string. A primeira versão
-    // deste caso proibia `/\bahead\|/` — e passou verde quando a sabotagem
-    // trocou o ramo por `identical|behind|ahead)`, porque ali `ahead` vem
-    // seguido de `)` e não de `|`. Proibir uma grafia deixa as outras entrarem;
-    // exigir o conjunto não deixa nenhuma.
-    const ramo = /^\s*([a-z|]+)\)\s*echo "ok:/m.exec(t);
-    expect(ramo, "não achei o ramo de aceitação do `case` — a trava mudou de forma").not.toBeNull();
-    expect(ramo?.[1]?.split("|").sort()).toEqual(["behind", "identical"]);
-  });
-
-  it("a trava NÃO tem `if:` de job — pulada, ela vira `skipped` e o imagens-ok lê isso como reprovação", () => {
-    const t = job(publish, "a-tag-veio-da-main");
-    // `if:` de STEP é permitido; o que não pode é o `if:` na altura do job
-    // (quatro espaços), que faz o GitHub pular o job inteiro.
-    expect(t.split("\n").filter((l) => /^ {4}if:/.test(l))).toEqual([]);
+  it("o workflow publica somente push da main, nunca push de tag", () => {
+    const gatilhos = publish.split(/^jobs:/m)[0] ?? "";
+    const executavel = gatilhos
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+    expect(executavel).toMatch(/push:\s*\n\s*branches:\s*\[main\]/);
+    expect(executavel).not.toContain("tags:");
   });
 });
 

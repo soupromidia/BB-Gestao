@@ -1,110 +1,31 @@
-name: Publicar imagem Docker (GHCR)
+name: Publicar imagens Docker (GHCR)
 
-# Builda as imagens GENÉRICAS que o self-hoster instala e publica no GitHub
-# Container Registry. O leigo puxa no VPS (não builda lá). Roda nos runners do
-# GitHub, então o build pesado nunca cai no VPS do usuário.
-#
-# São TRÊS imagens, e a razão de o worker e o scheduler estarem aqui é um defeito
-# real: o serviço `worker` não tinha `image:` no compose de produção, só `build:`.
-# Serviço build-only é pulado por `docker compose pull` e imune a `up -d` sem
-# `--build` — ele era construído na VPS de cada cliente, no install, e NENHUM
-# update.sh jamais o reconstruiu. O runtime do agente de IA congelava no código
-# do dia da instalação. Doutrina: docs/doctrine/packaging.md, invariante 1.
-
+# Etapa 3 da distribuicao Promidia: a main publica somente o trio imutavel
+# sha-<commit>. Pull requests e dispatch manual constroem e executam o smoke,
+# mas nao publicam. SemVer e o canal stable pertencem a uma etapa posterior.
 on:
   push:
-    tags: ["v*"]
-    branches: ["main"]
-  # NÃO acrescente `release: types: [published]` aqui. Ele já esteve, e o efeito
-  # foi medido na v1.3.0: `gh release create` empurra a tag E publica a release,
-  # então o MESMO commit foi construído DUAS vezes, com 5 minutos de diferença.
-  #
-  #   19:53:04  evento=push     v1.3.0 -> publicou 1.3.0, 1.3 e stable
-  #   19:58:05  evento=release  v1.3.0 -> reconstruiu e MOVEU 1.3.0 e 1.3,
-  #                                       sem mover stable (a condição exige push)
-  #
-  # Duas consequências, e a segunda é a grave:
-  #
-  # 1. `stable` e `1.3.0` ficaram em digests DIFERENTES (mesmo `revision`
-  #    9bd59e9 e mesmo `version`, builds distintos) — quem comparasse os dois
-  #    concluiria, com razão, que são artefatos diferentes.
-  # 2. A tag de VERSÃO foi movida depois de publicada. A doutrina inteira se
-  #    apoia em "instalação de cliente aponta para número de versão, nunca para
-  #    tag móvel" (docs/doctrine/packaging.md, invariante 3) — e era o nosso
-  #    próprio workflow movendo o número. Republicar uma release antiga (editar
-  #    e salvar) reconstruiria e moveria aquela versão de novo.
-  #
-  # O gatilho de push da tag já cobre o fluxo real: a tag é sempre empurrada,
-  # com ou sem release. Vigiado por tests/unit/packaging-artefato-do-cliente.test.ts.
-  # Em PR a imagem é CONSTRUÍDA e não publicada. Sem isto, nada no PR consegue
-  # revelar que a mudança quebra a imagem — foi assim que um bump de `next`
-  # passou por `verify`, `build-and-size`, `invariants` e `e2e` (os quatro
-  # obrigatórios) e derrubou o build do Dockerfile na `main`: o `next build`
-  # dentro da imagem não enxerga `tests/` (`.dockerignore`), e a partir do
-  # next 16.3 ele typecheca os `*.test.ts` colocados. O artefato que o
-  # self-hoster instala era o único sem gate.
+    branches: [main]
   pull_request:
   workflow_dispatch: {}
 
 env:
   REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+  IMAGE_SOURCE: https://github.com/soupromidia/BB-Gestao
+  IMAGE_TAG: sha-${{ github.sha }}
+
+concurrency:
+  group: publish-images-${{ github.repository }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
-  # Nenhuma tag publica sem estar CONTIDA na `main`.
-  #
-  # `on: push: tags: ["v*"]` reage a tag de QUALQUER ramo, e nenhuma das três
-  # condições do canal `stable` (mais abaixo) olha procedência — nem o
-  # `type=semver`, que publica `X.Y.Z` do mesmo jeito. A branch protection não
-  # cobre isto: ela vale para a branch `main`, não para refs de tag.
-  #
-  # E o alcance disso é o parque inteiro: `hostgator-setup-kit/agent.sh` oferece
-  # a MAIOR tag `v*` a toda VPS instalada, sem olhar de onde ela veio. Este repo
-  # já teve na árvore local uma tag `v1.4.0` de um FORK — ela existe hoje
-  # renomeada para `jmpo/v1.4.0` justamente para não colidir com a numeração
-  # daqui.
-  a-tag-veio-da-main:
-    runs-on: ubuntu-latest
-    # Sem o bloco, o token herda o default do REPOSITÓRIO — configuração que vive
-    # fora do repo. Mesma razão do `permissions: {}` de `imagens-ok`.
-    permissions:
-      contents: read
-    steps:
-      - name: A tag está contida na main?
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Sem `if:` no job, de propósito: job pulado deixa `build-and-push`
-          # pulado também, e `imagens-ok` (que roda com `always()`) lê `skipped`
-          # como reprovação. Em PR e em push de branch este job RODA e sai zero.
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
-            echo "não é push de tag (${GITHUB_REF_TYPE}) — nada a conferir"
-            exit 0
-          fi
-          estado=$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq .status)
-          echo "compare main...${GITHUB_SHA} → ${estado}"
-          # `identical` = a tag é o topo da main; `behind` = está atrás dela, ou
-          # seja, contida. `ahead` e `diverged` são commit que a main não tem.
-          case "$estado" in
-            identical|behind) echo "ok: o commit da tag está contido na main" ;;
-            *)
-              echo "::error::A tag ${GITHUB_REF_NAME} aponta para um commit que a main NÃO contém (${estado})."
-              echo "::error::Publicar isso entregaria ao parque instalado código que nunca passou pelo CI da main."
-              exit 1
-              ;;
-          esac
-
   build-and-push:
-    needs: [a-tag-veio-da-main]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
     strategy:
-      # fail-fast desligado: se o worker quebrar, ainda quero saber se o app
-      # também quebrou. Com ele ligado, o primeiro erro esconde os outros dois e
-      # o conserto vira uma rodada por imagem.
       fail-fast: false
       matrix:
         include:
@@ -117,133 +38,133 @@ jobs:
           - name: bb-gestao-scheduler
             dockerfile: Dockerfile.scheduler
             title: BB Gestão scheduler
-
     steps:
       - uses: actions/checkout@v7
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # A versão que a imagem vai reportar em /api/v1/health. Numa tag v1.2.3 é
-      # "1.2.3"; fora de tag, o SHA curto — que ainda responde "o que está
-      # rodando aqui?", que é a pergunta que o campo existe para responder.
-      - name: Resolver APP_VERSION
-        id: ver
+      # Cada membro faz sua propria reserva logica. Em rerun, uma imagem valida
+      # e reutilizada; ausencia permite um unico build; qualquer outro estado
+      # falha fechado antes que o build-push-action possa mover a tag.
+      - name: Verificar imagem SHA existente
+        id: imagem-sha
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAMESPACE }}/${{ matrix.name }}:${{ env.IMAGE_TAG }}
+          EXPECTED_TITLE: ${{ matrix.title }}
         run: |
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          saida=""
+          if saida=$(docker pull --platform linux/amd64 "${IMAGE_REF}" 2>&1); then
+            titulo=$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.title" }}')
+            origem=$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')
+            revisao=$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+            versao=$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')
+            fornecedor=$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.vendor" }}')
+            licenca=$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}')
+            sistema=$(docker image inspect "${IMAGE_REF}" --format '{{ .Os }}')
+            arquitetura=$(docker image inspect "${IMAGE_REF}" --format '{{ .Architecture }}')
+
+            [ "${titulo}" = "${EXPECTED_TITLE}" ] || {
+              echo "::error::${IMAGE_REF} tem title=${titulo}; esperado ${EXPECTED_TITLE}"
+              exit 1
+            }
+            [ "${origem}" = "${IMAGE_SOURCE}" ] || {
+              echo "::error::${IMAGE_REF} tem source=${origem}; esperado ${IMAGE_SOURCE}"
+              exit 1
+            }
+            [ "${revisao}" = "${GITHUB_SHA}" ] || {
+              echo "::error::${IMAGE_REF} tem revision=${revisao}; esperado ${GITHUB_SHA}"
+              exit 1
+            }
+            [ "${versao}" = "${IMAGE_TAG}" ] || {
+              echo "::error::${IMAGE_REF} tem version=${versao}; esperado ${IMAGE_TAG}"
+              exit 1
+            }
+            [ "${fornecedor}" = "Promidia" ] || {
+              echo "::error::${IMAGE_REF} tem vendor=${fornecedor}; esperado Promidia"
+              exit 1
+            }
+            [ "${licenca}" = "MIT" ] || {
+              echo "::error::${IMAGE_REF} tem licenses=${licenca}; esperado MIT"
+              exit 1
+            }
+            [ "${sistema}" = "linux" ] || {
+              echo "::error::${IMAGE_REF} tem os=${sistema}; esperado linux"
+              exit 1
+            }
+            [ "${arquitetura}" = "amd64" ] || {
+              echo "::error::${IMAGE_REF} tem arquitetura=${arquitetura}; esperado amd64"
+              exit 1
+            }
+
+            echo "reutilizar=true" >> "${GITHUB_OUTPUT}"
+            echo "reutilizada: ${IMAGE_REF}"
+            exit 0
           fi
 
-      - name: Docker metadata (tags/labels)
+          # Somente ausencia inequivoca autoriza construir. Erro de rede,
+          # permissao ou plataforma incompativel nunca pode virar sobrescrita.
+          if grep -qiE 'manifest unknown|manifest[^:]*not found|not found: manifest|name unknown' <<<"${saida}"; then
+            echo "reutilizar=false" >> "${GITHUB_OUTPUT}"
+            echo "ausente: ${IMAGE_REF}"
+            exit 0
+          fi
+
+          echo "${saida}"
+          echo "::error::Nao foi possivel provar que ${IMAGE_REF} esta ausente ou compativel; abortando sem publicar."
+          exit 1
+
+      - name: Docker metadata (tag e labels OCI)
         id: meta
+        if: steps.imagem-sha.outputs.reutilizar != 'true'
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}
+          flavor: |
+            latest=false
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            # `enable={{is_default_branch}}` NÃO basta: o metadata-action o
-            # considera verdadeiro também num push de TAG, então toda release
-            # movia `latest` junto. Isso apagava a distinção que a doutrina
-            # inteira depende — `latest` = topo da main, `stable` = última
-            # release — e fazia `latest` oscilar entre os dois.
-            type=raw,value=latest,enable=${{ github.ref_type == 'branch' && github.ref_name == 'main' }}
-            # `stable` NÃO sai daqui, e a razão é a issue #488. Ele já saiu: era
-            # mais um `type=raw` nesta lista, e por isso CADA imagem movia o
-            # canal sozinha, ao terminar, sem saber se as irmãs conseguiram.
-            # Medido no corte da v1.12.0 — o job do app morreu em `Set up
-            # Buildx`, antes de compilar coisa alguma, enquanto worker e
-            # scheduler seguiram e moveram o ponteiro:
-            #
-            #   deskcommcrm          1.12.0   404
-            #   deskcommcrm          stable   sha256:0235d02b…  ← 1.11.0
-            #   deskcomm-worker      stable   sha256:66c7bde4…  ← 1.12.0
-            #   deskcomm-scheduler   stable   sha256:ac6b87cc…  ← 1.12.0
-            #
-            # Quem instalasse por `stable` naquela janela recebia app 1.11.0 com
-            # worker e scheduler 1.12.0. `fail-fast: true` não resolveria: quando
-            # o app falhou, as irmãs JÁ tinham publicado e JÁ tinham movido o
-            # canal — abortá-las não desfaz o que foi publicado.
-            #
-            # Publicar por NÚMERO é o que continua aqui, e é seguro: `1.12.0`
-            # pode existir para uma imagem e não para outra sem prejuízo, porque
-            # ninguém instala por um número que o instalador não escreveu. Mover
-            # o CANAL é ato do job `promover-stable`, lá embaixo, quando o
-            # conjunto está completo.
+            type=raw,value=${{ env.IMAGE_TAG }}
           labels: |
             org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.source=${{ env.IMAGE_SOURCE }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
 
       - name: Set up Buildx
+        if: steps.imagem-sha.outputs.reutilizar != 'true'
         uses: docker/setup-buildx-action@v4
 
-      - name: Build e push (imagem genérica — sem segredos)
+      - name: Build e push quando a imagem SHA nao existe
+        if: steps.imagem-sha.outputs.reutilizar != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          # linux/amd64: o VPS HostGator e a imagem do WAHA são amd64.
           platforms: linux/amd64
-          # PR de fork não tem permissão de escrita no GHCR, e publicar imagem
-          # de código não revisado seria pior que não gatear. Em PR: constrói
-          # (que é o gate) e descarta.
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          load: ${{ matrix.name == 'bb-gestao-app' && (github.event_name != 'push' || github.ref != 'refs/heads/main') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            APP_VERSION=${{ steps.ver.outputs.value }}
-          # Cache por imagem: as três têm camadas diferentes e um escopo único
-          # faria uma sobrescrever o cache da outra a cada run.
+            APP_VERSION=${{ env.IMAGE_TAG }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-          # Sem build-args de segredo: a imagem é genérica (NEXT_PUBLIC_* viram
-          # placeholder; valores reais entram em runtime no VPS do usuário).
 
-  # A imagem do app CONSTRÓI e MORRE ao subir? Este job existe porque isso
-  # aconteceu: `next@16.3.1` passou a resolver `@swc/helpers` por ESM, o file
-  # tracing do `output: standalone` levou 2 dos 108 arquivos do pacote, e o
-  # container entrou em crashloop com MODULE_NOT_FOUND. A imagem construiu,
-  # `imagens-ok` ficou verde, ela foi publicada — e o defeito só apareceu no
-  # `docker compose up` da VPS, com a produção fora do ar.
-  #
-  # "Constrói" nunca foi prova de "sobe". O gate mede o boot: erguer o
-  # container com env de mentira e exigir que o Next chegue a "Ready". Um 500
-  # depois disso é esperado (não há Supabase aqui) e não reprova — o que
-  # reprova é o processo não chegar a servir.
-  imagem-do-app-sobe:
-    needs: [a-tag-veio-da-main]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
+      # Na main, baixa a referencia canonica que acabou de ser publicada ou
+      # reutilizada. Em PR/dispatch, o unico build do app ja fez load local.
+      - name: Baixar a imagem SHA do app para smoke
+        if: matrix.name == 'bb-gestao-app' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker pull --platform linux/amd64 "${IMAGE_NAMESPACE}/bb-gestao-app:${IMAGE_TAG}"
 
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build local da imagem do app (sem push)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: deskcomm-smoke:pr
-          build-args: |
-            APP_VERSION=smoke
-          # Mesmo escopo de cache do build-and-push: as camadas são idênticas,
-          # então na prática este job reaproveita aquele build em vez de repeti-lo.
-          cache-from: type=gha,scope=bb-gestao-app
-
-      - name: O container chega a servir?
+      - name: O container do app chega a servir?
+        if: matrix.name == 'bb-gestao-app'
         run: |
           set -euo pipefail
           docker run -d --name smoke -p 3000:3000 \
@@ -252,13 +173,12 @@ jobs:
             -e SUPABASE_SERVICE_ROLE_KEY=chave-de-mentira \
             -e SUPABASE_DB_URL=postgres://u:p@127.0.0.1:5432/postgres \
             -e SENTRY_DSN=off \
-            deskcomm-smoke:pr
+            "${IMAGE_NAMESPACE}/bb-gestao-app:${IMAGE_TAG}"
 
-          # Espera o boot; falha rápido se o processo morreu (crashloop).
           pronto=nao
           for _ in $(seq 1 40); do
             if ! docker ps --filter name=smoke --filter status=running -q | grep -q .; then
-              echo "::error::o container do app MORREU durante o boot"
+              echo "::error::o container do app morreu durante o boot"
               docker logs smoke 2>&1 | tail -40
               exit 1
             fi
@@ -269,119 +189,113 @@ jobs:
             sleep 3
           done
 
-          if [ "$pronto" != "sim" ]; then
-            echo "::error::o app não chegou a servir em 120s"
+          if [ "${pronto}" != "sim" ]; then
+            echo "::error::o app nao chegou a servir em 120s"
             docker logs smoke 2>&1 | tail -40
             exit 1
           fi
 
-          # A assinatura exata do defeito que originou este gate — explícita,
-          # para o log dizer o que houve em vez de só "não subiu".
           if docker logs smoke 2>&1 | grep -q "MODULE_NOT_FOUND"; then
-            echo "::error::falta módulo no standalone (o defeito do @swc/helpers)"
+            echo "::error::falta modulo no standalone"
             docker logs smoke 2>&1 | grep -A5 MODULE_NOT_FOUND | head -20
             exit 1
           fi
 
-          echo "o app chegou a servir:"
           docker logs smoke 2>&1 | grep -E "Ready in|Next.js" | head -3
 
-      - name: Encerrar
-        if: always()
+      - name: Encerrar smoke
+        if: ${{ always() && matrix.name == 'bb-gestao-app' }}
         run: docker rm -f smoke 2>/dev/null || true
 
-  # O CANAL `stable` MOVE AQUI, E SÓ AQUI — depois que o conjunto está completo.
-  #
-  # Antes, `stable` era mais um `type=raw` na lista de tags da matriz, e por isso
-  # CADA imagem movia o canal sozinha ao terminar, sem saber se as irmãs
-  # conseguiram. Medido no registro público durante o corte da v1.12.0 (issue
-  # #488), com sonda de DIGEST — a ingênua ("a tag `stable` existe?") devolve 200
-  # nas três e não prova nada, porque `stable` existe desde a 1.11.0:
-  #
-  #   deskcommcrm          1.12.0   404
-  #   deskcommcrm          stable   sha256:0235d02b…   <- 1.11.0
-  #   deskcomm-worker      stable   sha256:66c7bde4…   <- 1.12.0
-  #   deskcomm-scheduler   stable   sha256:ac6b87cc…   <- 1.12.0
-  #
-  # Quem instalasse por `stable` naquela janela recebia app 1.11.0 com worker e
-  # scheduler 1.12.0. Os três saem do mesmo repositório e compartilham código;
-  # rodar dois numa versão e o terceiro noutra é um estado que nenhum teste cobre
-  # e que ninguém escolheu. O job do app tinha morrido em `Set up Buildx` — antes
-  # de compilar qualquer coisa, portanto por infraestrutura e não por conteúdo.
-  #
-  # `fail-fast: true` na matriz seria o conserto óbvio, e chega tarde: quando o
-  # app falhou, as irmãs JÁ tinham publicado e JÁ tinham movido o canal. Abortar
-  # não desfaz o que foi publicado. O que separa os dois atos é publicar por
-  # NÚMERO sempre (cada imagem, independente — ninguém instala por um número que
-  # o instalador não escreveu) e mover o CANAL num job final.
-  promover-stable:
-    # Sem `always()`, e isso é o ponto: `needs` só libera quando as DUAS entradas
-    # deram `success`. Com `always()` o canal andaria por cima de uma irmã que
-    # falhou, que é exatamente o defeito de volta com outra roupa.
-    needs: [build-and-push, imagem-do-app-sobe]
-    # As três condições, e cada uma barra um caminho medido. Sem `push`, um
-    # dispatch numa release ANTIGA faria `stable` REGREDIR, e todo self-hoster no
-    # default do compose sofreria downgrade silencioso no próximo `up -d` — app
-    # velho sobre banco já migrado. Sem `tag`, um dispatch numa branch moveria o
-    # canal. Sem o `v`, uma tag de teste o move (o registro já tem uma
-    # `quebrada-teste`, que nenhum push na main consegue produzir).
-    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+  # Gate remoto do trio. Ele nao promove canal algum: apenas prova que as tres
+  # tags existem no GHCR privado e carregam a identidade do mesmo SHA completo.
+  validar-trio-sha:
+    needs: [build-and-push]
     runs-on: ubuntu-latest
     permissions:
-      # O menor escopo que faz o trabalho: reapontar tag no GHCR. Sem o bloco, o
-      # GITHUB_TOKEN herdaria o default do REPOSITÓRIO — configuração que vive
-      # fora do repo, muda num clique e não passa por PR.
-      packages: write
+      contents: read
+      packages: read
     steps:
-      - name: Log in to GHCR
+      - name: Log in to GHCR (leitura)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Apontar `stable` para esta versão, nas três imagens
-        env:
-          VERSAO: ${{ github.ref_name }}
+      - name: Validar existencia e identidade do trio
         run: |
           set -euo pipefail
-          # `imagetools create` REAPONTA o índice que já foi publicado — não
-          # reconstrói. Reconstruir o mesmo commit dá um digest DIFERENTE (foi o
-          # que fez `stable` e `1.3.0` divergirem com o mesmo `revision`), e aí o
-          # canal deixaria de ser o mesmo manifesto que a versão.
-          dono=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          numero="${VERSAO#v}"
-          for img in bb-gestao-app bb-gestao-worker bb-gestao-scheduler; do
-            echo "::group::${img}"
-            docker buildx imagetools create \
-              --tag "${REGISTRY}/${dono}/${img}:stable" \
-              "${REGISTRY}/${dono}/${img}:${numero}"
-            echo "::endgroup::"
-          done
-          echo "stable agora aponta para ${numero} nas três imagens"
+          if [ "${GITHUB_EVENT_NAME}" != "push" ] || [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "execucao sem publicacao: validacao remota nao se aplica"
+            exit 0
+          fi
 
-  # Job de fachada: dá UM nome estável para a branch protection exigir. Sem ele,
-  # o required check teria que listar as três instâncias da matriz pelo nome
-  # gerado, e acrescentar uma quarta imagem um dia quebraria o gate em silêncio —
-  # o merge voltaria a passar sem que ninguém tivesse decidido isso.
+          for imagem in bb-gestao-app bb-gestao-worker bb-gestao-scheduler; do
+            case "${imagem}" in
+              bb-gestao-app) titulo_esperado="BB Gestão app" ;;
+              bb-gestao-worker) titulo_esperado="BB Gestão worker" ;;
+              bb-gestao-scheduler) titulo_esperado="BB Gestão scheduler" ;;
+            esac
+
+            ref="${IMAGE_NAMESPACE}/${imagem}:${IMAGE_TAG}"
+            docker pull --platform linux/amd64 "${ref}"
+            titulo=$(docker image inspect "${ref}" --format '{{ index .Config.Labels "org.opencontainers.image.title" }}')
+            origem=$(docker image inspect "${ref}" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')
+            revisao=$(docker image inspect "${ref}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+            versao=$(docker image inspect "${ref}" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')
+            fornecedor=$(docker image inspect "${ref}" --format '{{ index .Config.Labels "org.opencontainers.image.vendor" }}')
+            licenca=$(docker image inspect "${ref}" --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}')
+            sistema=$(docker image inspect "${ref}" --format '{{ .Os }}')
+            arquitetura=$(docker image inspect "${ref}" --format '{{ .Architecture }}')
+
+            [ "${titulo}" = "${titulo_esperado}" ] || {
+              echo "::error::${ref} tem title=${titulo}; esperado ${titulo_esperado}"
+              exit 1
+            }
+            [ "${origem}" = "${IMAGE_SOURCE}" ] || {
+              echo "::error::${ref} tem source=${origem}; esperado ${IMAGE_SOURCE}"
+              exit 1
+            }
+            [ "${revisao}" = "${GITHUB_SHA}" ] || {
+              echo "::error::${ref} tem revision=${revisao}; esperado ${GITHUB_SHA}"
+              exit 1
+            }
+            [ "${versao}" = "${IMAGE_TAG}" ] || {
+              echo "::error::${ref} tem version=${versao}; esperado ${IMAGE_TAG}"
+              exit 1
+            }
+            [ "${fornecedor}" = "Promidia" ] || {
+              echo "::error::${ref} tem vendor=${fornecedor}; esperado Promidia"
+              exit 1
+            }
+            [ "${licenca}" = "MIT" ] || {
+              echo "::error::${ref} tem licenses=${licenca}; esperado MIT"
+              exit 1
+            }
+            [ "${sistema}" = "linux" ] || {
+              echo "::error::${ref} tem os=${sistema}; esperado linux"
+              exit 1
+            }
+            [ "${arquitetura}" = "amd64" ] || {
+              echo "::error::${ref} tem arquitetura=${arquitetura}; esperado amd64"
+              exit 1
+            }
+            echo "ok: ${ref} -> ${revisao} (${sistema}/${arquitetura})"
+          done
+
+  # Fachada unica disponivel para branch protection. No fork, ela ainda precisa
+  # ser verificada e configurada externamente como required check.
   imagens-ok:
     if: always()
+    needs: [build-and-push, validar-trio-sha]
     runs-on: ubuntu-latest
-    # Nenhuma permissão: este job só lê o resultado de `needs` e sai. Sem o bloco,
-    # o GITHUB_TOKEN herdaria o default do REPOSITÓRIO — configuração que vive fora
-    # do repo, muda num clique e não passa por PR.
-    #
-    # A regra e o gate que a impõe vieram do PR #241 (alertas do CodeQL), de um
-    # contribuidor. O teste dele pegou este job: eu o criei sem o bloco, e o defeito
-    # só apareceu quando a `main` entrou naquela branch. É o próprio caso que a
-    # justificativa do teste antecipa — "um job novo nasce sem bloco e herda o
-    # default de novo".
     permissions: {}
-    needs: [build-and-push, imagem-do-app-sobe]
     steps:
-      - name: Falhar se qualquer imagem não construiu — ou se o app não sobe
+      - name: Falhar se o trio nao foi integralmente validado
         run: |
-          echo "build-and-push:     ${{ needs.build-and-push.result }}"
-          echo "imagem-do-app-sobe: ${{ needs.imagem-do-app-sobe.result }}"
+          echo "build-and-push:   ${{ needs.build-and-push.result }}"
+          echo "validar-trio-sha: ${{ needs.validar-trio-sha.result }}"
           [ "${{ needs.build-and-push.result }}" = "success" ]
-          [ "${{ needs.imagem-do-app-sobe.result }}" = "success" ]
+          [ "${{ needs.validar-trio-sha.result }}" = "success" ]

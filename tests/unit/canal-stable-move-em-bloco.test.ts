@@ -36,13 +36,12 @@ import { describe, expect, it } from "vitest";
  * imagem, independente — ninguém instala por um número que o instalador não
  * escreveu) e mover o CANAL num job final, quando o conjunto está completo.
  *
- * ## O que este arquivo prova, e o que ele NÃO prova
+ * ## Estado do fork na Etapa 3
  *
- * Ele mede a FORMA do YAML. A prova de comportamento só existe num push de tag
- * real — é o único evento que move `stable` —, e quem a faz é o passo "As três
- * imagens…" de `release.yml`, que agora compara DIGEST e falha alto quando o
- * canal não acompanhou a versão. Aqui se guarda a estrutura que torna aquele
- * passo verdadeiro; lá se guarda o efeito.
+ * O histórico acima continua sendo a razão para nunca mover `stable` por imagem.
+ * Nesta etapa o canal não existe no fluxo ativo: este arquivo prova que
+ * `publish-image.yml` não o publica nem o promove. A conferência histórica de
+ * digest em `release.yml` fica preservada para a implementação da Etapa 4.
  */
 const RAIZ = process.cwd();
 const publish = readFileSync(join(RAIZ, ".github/workflows/publish-image.yml"), "utf8");
@@ -77,7 +76,7 @@ function corpo(yml: string, nome: string): string {
 
 const IMAGENS = ["bb-gestao-app", "bb-gestao-worker", "bb-gestao-scheduler"];
 
-describe("o canal `stable` move em bloco", () => {
+describe("o canal `stable` permanece fora da Etapa 3", () => {
   it("o instrumento está vivo: enxerga os jobs de publish-image.yml", () => {
     // Controle positivo. Sem ele, um helper que parou de casar devolve "" e as
     // asserções de ausência abaixo passam por vacuidade — vigiando nada.
@@ -86,56 +85,32 @@ describe("o canal `stable` move em bloco", () => {
     expect(job(publish, "build-and-push")).toContain("matrix:");
   });
 
-  it("nenhuma imagem move o canal sozinha dentro da matriz", () => {
-    const linhas = corpo(publish, "build-and-push")
+  it("nenhum trecho executável publica ou promove `stable`", () => {
+    const executavel = publish
       .split("\n")
-      .filter((l) => l.includes("value=stable"));
-    expect(
-      linhas,
-      "`stable` de volta na matriz: cada imagem volta a mover o canal sem saber das irmãs",
-    ).toEqual([]);
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+    expect(executavel).not.toMatch(/\bstable\b/);
+    expect(job(publish, "promover-stable")).toBe("");
   });
 
-  it("o job de promoção espera as três imagens E o boot do app — nem uma a menos", () => {
-    const needs = /needs:\s*\[([^\]]*)\]/.exec(corpo(publish, "promover-stable"))?.[1];
-    expect(needs, "o job de promoção não declara `needs`").toBeDefined();
-    // Conjunto exato, não `toContain`: exigir a presença de um deixaria remover
-    // o outro, e é a remoção que reabre o buraco.
-    expect(needs?.split(",").map((s) => s.trim()).sort()).toEqual([
-      "build-and-push",
-      "imagem-do-app-sobe",
-    ]);
+  it("o gate do trio espera as três imagens E o boot do app", () => {
+    const needs = /needs:\s*\[([^\]]*)\]/.exec(corpo(publish, "validar-trio-sha"))?.[1];
+    expect(needs, "o gate do trio não declara `needs`").toBeDefined();
+    expect(needs?.split(",").map((s) => s.trim())).toEqual(["build-and-push"]);
+    expect(corpo(publish, "build-and-push")).toContain(
+      "if: matrix.name == 'bb-gestao-app'",
+    );
+    expect(corpo(publish, "build-and-push")).toContain(
+      "O container do app chega a servir?",
+    );
   });
 
-  it("a promoção NÃO roda com `always()` — isso a faria promover por cima de uma irmã que falhou", () => {
-    expect(corpo(publish, "promover-stable")).not.toMatch(/always\(\)/);
-  });
-
-  it("as três imagens são promovidas — o canal não anda pela metade nem aqui", () => {
-    const t = corpo(publish, "promover-stable");
-    for (const img of IMAGENS) expect(t, `a promoção não cita ${img}`).toContain(img);
-  });
-
-  it("a promoção REAPONTA o manifesto publicado, nunca reconstrói", () => {
-    // Reconstruir o mesmo commit dá um digest DIFERENTE — foi o que aconteceu na
-    // v1.3.0 e fez `stable` e `1.3.0` divergirem com o mesmo `revision`.
-    // `imagetools create` copia o índice que já existe.
-    expect(corpo(publish, "promover-stable")).toMatch(/imagetools create/);
-  });
-
-  it("o canal só se move num push de tag `vX.Y.Z`", () => {
-    const cond = / {4}if:\s*(.+)/.exec(corpo(publish, "promover-stable"))?.[1] ?? "";
-    // As três condições, e cada uma barra um caminho medido: sem `push`, um
-    // dispatch numa release ANTIGA faria `stable` REGREDIR; sem `tag`, um
-    // dispatch numa branch moveria o canal; sem o `v`, uma tag de teste o move
-    // (o registro já tem uma `quebrada-teste`).
-    expect(cond).toContain("github.event_name == 'push'");
-    expect(cond).toContain("github.ref_type == 'tag'");
-    expect(cond).toContain("startsWith(github.ref_name, 'v')");
-  });
-
-  it("a promoção declara o privilégio que ela usa, no menor escopo", () => {
-    expect(corpo(publish, "promover-stable")).toMatch(/^ {6}packages: write$/m);
+  it("as três imagens são validadas com a tag do mesmo commit", () => {
+    const t = corpo(publish, "validar-trio-sha");
+    for (const img of IMAGENS) expect(t, `a validação não cita ${img}`).toContain(img);
+    expect(t).toContain('revisao=$(docker image inspect');
+    expect(t).toContain('[ "${revisao}" = "${GITHUB_SHA}" ]');
   });
 });
 
