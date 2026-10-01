@@ -58,6 +58,8 @@ const ESCRITA_JUSTIFICADA: Record<string, string> = {
     "promove manifests SHA já validados para SemVer e stable no GHCR privado, sem rebuild",
   "release.yml::contents: write":
     "publica a GitHub Release somente depois que o trio stable foi validado; a tag Git nasce pelo App",
+  "release.yml::permission-contents: write":
+    "limita os dois tokens do GitHub App à escrita de contents necessária para branch, commit e tag da release",
   "acolhida.yml::pull-requests: write":
     "comenta a acolhida no PR de fork; é o ÚNICO escopo do workflow (o bloco zera o resto), " +
     "e o job não faz checkout nem usa action nenhuma — ver tests/unit/acolhida-nao-toca-no-fork.test.ts",

@@ -46,15 +46,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  */
 
 const RAIZ = process.cwd();
-const BOT = "deskcomm-release[bot]";
+const APP_SLUG = "promidia-release-test";
+const BOT = `${APP_SLUG}[bot]`;
 
-/** O bloco `run:` do passo que decide se este push foi um corte. */
-function bashDaGuarda(): string {
+/** O bloco `run:` de um passo nomeado do workflow real. */
+function bashDoPasso(nome: string): string {
   const yml = readFileSync(join(RAIZ, ".github/workflows/release.yml"), "utf8");
-  const inicio = yml.indexOf("Este push foi um corte de release?");
-  expect(inicio, "o passo da guarda sumiu do release.yml").toBeGreaterThan(-1);
+  const inicio = yml.indexOf(nome);
+  expect(inicio, `o passo "${nome}" sumiu do release.yml`).toBeGreaterThan(-1);
   const run = yml.indexOf("run: |", inicio);
-  expect(run, "o passo da guarda não tem bloco run").toBeGreaterThan(-1);
+  expect(run, `o passo "${nome}" não tem bloco run`).toBeGreaterThan(-1);
 
   const linhas = yml.slice(run + "run: |".length).split("\n").slice(1);
   const corpo: string[] = [];
@@ -65,6 +66,9 @@ function bashDaGuarda(): string {
   }
   return corpo.join("\n");
 }
+
+const bashDaGuarda = () => bashDoPasso("Este push foi um corte de release?");
+const bashDaIdentidade = () => bashDoPasso("Validar identidade do corte");
 
 let repo: string;
 
@@ -101,7 +105,7 @@ function commit(mensagem: string, autor = "Alguém do time") {
  * `HEAD^2` primeiro, depois `HEAD^`, depois `HEAD`: a ordem importa, senão
  * `HEAD^2` viraria `<sha>^2` só pela metade.
  */
-function decisaoPara(sha: string): string {
+function decisaoPara(sha: string, versao = "999.999.999"): string {
   const original = bashDaGuarda();
 
   // A versão vem do CHANGELOG por um script de TS que não existe no repo
@@ -114,7 +118,7 @@ function decisaoPara(sha: string): string {
   // `scripts/`. O sintoma é um `Command failed` sem explicação, e foi assim que
   // este teste passou na minha máquina e reprovou no CI.
   const script = original
-    .replace(/^[ \t]*versao=\$\([^\n]*\)[ \t\r]*$/m, 'versao="999.999.999"')
+    .replace(/^[ \t]*versao=\$\([^\n]*\)[ \t\r]*$/m, `versao="${versao}"`)
     .replace(/HEAD\^2/g, `${sha}^2`)
     .replace(/HEAD\^/g, `${sha}^`)
     .replace(/\bHEAD\b/g, sha);
@@ -147,7 +151,22 @@ function decisaoPara(sha: string): string {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const escrito = readFileSync(saidaDoGithub, "utf8");
-    return /cortar=(\w+)/.exec(`${escrito}\n${saida}`)?.[1] ?? "(nenhuma decisão)";
+    const decisao = /cortar=(\w+)/.exec(`${escrito}\n${saida}`)?.[1] ?? "(nenhuma decisão)";
+
+    if (decisao === "sim") {
+      const identidade = bashDaIdentidade()
+        .replace(/HEAD\^2/g, `${sha}^2`)
+        .replace(/HEAD\^/g, `${sha}^`)
+        .replace(/\bHEAD\b/g, sha);
+      execFileSync("bash", ["-c", identidade], {
+        cwd: repo,
+        encoding: "utf8",
+        env: { ...process.env, BOT_NAME: BOT, VERSAO: "999.999.999" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+
+    return decisao;
   } catch (err) {
     // `execFileSync` joga fora o stderr na mensagem padrão, e sem ele o CI
     // devolve só "Command failed: bash -c set -euo pipefail". Diagnóstico que
@@ -255,6 +274,11 @@ describe("a guarda reconhece o corte pela forma dele", () => {
   it("NÃO corta um commit que nem toca em .changes/", () => {
     expect(decisaoPara(commitDeFeature)).toBe("nao");
   });
+
+  it("push comum anterior à primeira release termina sem autenticar o App", () => {
+    expect(bashDaGuarda()).not.toMatch(/RELEASE_APP|create-github-app-token|APP_SLUG/);
+    expect(decisaoPara(commitDeFeature, "")).toBe("nao");
+  });
 });
 
 describe("o que SOBRA da release também decide — e foi um cético que achou isto", () => {
@@ -317,7 +341,7 @@ describe("a guarda recusa ALTO, e não em silêncio, quem apaga fragmento sem se
   it("apagar fragmento à mão, num commit não assinado pelo App, derruba o passo", () => {
     // A forja que a guarda antiga DEIXAVA passar: escrever a seção no CHANGELOG
     // e esvaziar o diretório criava a tag. Agora não basta apagar — é preciso a
-    // identidade do App, que vive em secrets.
+    // identidade derivada do app-slug devolvido pelo App autenticado.
     git(["checkout", "-q", "main"]);
     rmSync(join(repo, ".changes/c.md"));
     writeFileSync(join(repo, "CHANGELOG.md"), "# Changelog\n\n## [999.999.999]\n");

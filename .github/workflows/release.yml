@@ -48,8 +48,23 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: token
         with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Resolver identidade Git do App
+        id: app-identity
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [ -n "${APP_SLUG}" ] || { echo "::error::O App autenticado não informou app-slug"; exit 1; }
+          bot_user_id=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          [[ "${bot_user_id}" =~ ^[0-9]+$ ]] || { echo "::error::ID numérico do bot não resolvido"; exit 1; }
+          bot_name="${APP_SLUG}[bot]"
+          echo "name=${bot_name}" >> "${GITHUB_OUTPUT}"
+          echo "email=${bot_user_id}+${bot_name}@users.noreply.github.com" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/checkout@v7
         with:
@@ -75,10 +90,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           VERSAO: ${{ steps.corte.outputs.versao }}
+          BOT_NAME: ${{ steps.app-identity.outputs.name }}
+          BOT_EMAIL: ${{ steps.app-identity.outputs.email }}
         run: |
           set -euo pipefail
-          git config user.name  'deskcomm-release[bot]'
-          git config user.email '${{ steps.token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          git config user.name  "${BOT_NAME}"
+          git config user.email "${BOT_EMAIL}"
           git checkout -b "release/${VERSAO}"
           git add CHANGELOG.md .changes
           git commit -m "release(${VERSAO}): a versão montada a partir dos fragmentos declarados"
@@ -104,16 +121,12 @@ jobs:
       contents: read
       checks: read
     steps:
-      - uses: actions/create-github-app-token@v3
-        id: token
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ steps.token.outputs.token }}
+          # A detecção de push comum usa somente o GITHUB_TOKEN read-only e não
+          # deixa essa credencial persistida para um eventual push de tag.
+          persist-credentials: false
 
       - uses: ./.github/actions/preparar-node
         # O teto do preâmbulo mora aqui porque passo de composite action não
@@ -156,36 +169,15 @@ jobs:
           # falhou (f6f91377): a guarda antiga via depois=1 e recusava; a
           # nova vê 3 removidos e corta.
           #
-          # ⚠️ A TERCEIRA CONDIÇÃO É CINTO DE SEGURANÇA CONTRA ENGANO, NÃO
-          # CONTRA FORJA — e a distinção precisa estar escrita aqui, porque a
-          # versão anterior deste comentário dizia que a identidade do App
-          # "vive em secrets", e isso é FALSO.
-          #
-          # `%an` é o NOME DO AUTOR: campo de texto que qualquer um define.
-          # `git -c user.name='deskcomm-release[bot]' commit` devolve exatamente
-          # a string que a comparação abaixo procura. Medido.
-          #
-          # Nem adianta trocar por conferência criptográfica: os cinco cortes
-          # reais desta main têm `%G? = N` — não há assinatura para conferir.
-          #
-          # O que ela pega é o caso COMUM: alguém apaga um fragmento sem querer
-          # e a tag nasceria sozinha. Contra isso ela faz barulho em vez de
-          # silêncio, e é por isso que fica. Contra forja deliberada ela não
-          # protege, e a proteção de verdade — conferir pela API que o PR de
-          # origem foi aberto pelo App — está na issue #478.
+          # A identidade do autor é validada numa segunda fase, somente depois
+          # que esta detecção estrutural concluir `cortar=sim`. Assim um push
+          # comum não depende de variável ou secret do GitHub App.
           versao=$(pnpm exec tsx scripts/cortar-release.ts --versao-do-changelog)
 
           # `--diff-filter=D` conta o que este commit APAGOU de `.changes/`.
           # `|| true` porque `grep -c` sai 1 quando não casa nada, e `set -e`
           # mataria o passo justamente no caso normal (PR comum, zero removidos).
           removidos=$(git diff --diff-filter=D --name-only HEAD^ HEAD -- .changes/ | grep -c '\.md$' || true)
-
-          # Num merge commit, `HEAD^2` é a ponta do branch de release — o
-          # commit que o App assinou. Se o merge for squash não há segundo pai,
-          # e aí o autor do próprio HEAD é quem responde. O `|| true` evita que
-          # a ausência de `HEAD^2` derrube o passo.
-          assinante=$(git log -1 --format='%an' 'HEAD^2' 2>/dev/null || true)
-          [ -n "${assinante}" ] || assinante=$(git log -1 --format='%an' HEAD)
 
           # ─── O QUE SOBROU, E POR QUE ISSO IMPORTA ─────────────────────────
           #
@@ -227,7 +219,6 @@ jobs:
           fi
 
           echo "fragmentos removidos por este commit: ${removidos}"
-          echo "assinante do corte: ${assinante}"
           echo "fragmentos vivos que exigem ação: ${exigem_acao:-nenhum}"
 
           if git rev-parse -q --verify "refs/tags/v${versao}" >/dev/null; then
@@ -237,14 +228,6 @@ jobs:
             echo "::notice::O CHANGELOG anuncia ${versao} sem tag, mas este push não apagou fragmento nenhum."
             echo "::notice::Tag não criada. Uma release sai do workflow 'release' (Run workflow), nunca de um merge comum."
             echo "cortar=nao" >> "$GITHUB_OUTPUT"
-          elif [ "${assinante}" != "deskcomm-release[bot]" ]; then
-            # Alto, e não `notice`: alguém apagou fragmento de `.changes/` num
-            # commit que não veio do workflow de release. Ou é forja, ou é
-            # engano — e o silêncio é exatamente o que fez a #472 passar dias
-            # sem ninguém ver.
-            echo "::error::Este commit apagou ${removidos} fragmento(s) de .changes/ mas não foi assinado pelo App da release (assinante: ${assinante})."
-            echo "::error::A tag v${versao} NÃO foi criada. Se isto foi um corte legítimo, ele não saiu do workflow 'release'."
-            exit 1
           elif [ -n "${exigem_acao}" ]; then
             # Alto, e de novo não `notice`: este é o único caso em que NÃO cortar
             # é o certo, e ele precisa de gente. Cortar publicaria `stable` sem o
@@ -257,6 +240,59 @@ jobs:
             echo "corte de release: ${removidos} fragmento(s) consumido(s), v${versao} ainda não existe"
             echo "cortar=sim"       >> "$GITHUB_OUTPUT"
             echo "versao=${versao}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Autenticar o App da Promidia para o corte
+        if: steps.pendente.outputs.cortar == 'sim'
+        uses: actions/create-github-app-token@v3
+        id: token
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Resolver identidade Git do App
+        if: steps.pendente.outputs.cortar == 'sim'
+        id: app-identity
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          APP_SLUG: ${{ steps.token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          [ -n "${APP_SLUG}" ] || { echo "::error::O App autenticado não informou app-slug"; exit 1; }
+          bot_user_id=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          [[ "${bot_user_id}" =~ ^[0-9]+$ ]] || { echo "::error::ID numérico do bot não resolvido"; exit 1; }
+          bot_name="${APP_SLUG}[bot]"
+          echo "name=${bot_name}" >> "${GITHUB_OUTPUT}"
+          echo "email=${bot_user_id}+${bot_name}@users.noreply.github.com" >> "${GITHUB_OUTPUT}"
+
+      - name: Preparar checkout para escrita pelo App
+        if: steps.pendente.outputs.cortar == 'sim'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Validar identidade do corte
+        if: steps.pendente.outputs.cortar == 'sim'
+        env:
+          BOT_NAME: ${{ steps.app-identity.outputs.name }}
+          VERSAO: ${{ steps.pendente.outputs.versao }}
+        run: |
+          set -euo pipefail
+
+          # Num merge commit, HEAD^2 é a ponta do branch de release. Em squash,
+          # o autor do próprio HEAD responde. O nome não é prova criptográfica;
+          # ele preserva a guarda contra remoção acidental de fragmentos.
+          assinante=$(git log -1 --format='%an' 'HEAD^2' 2>/dev/null || true)
+          [ -n "${assinante}" ] || assinante=$(git log -1 --format='%an' HEAD)
+          echo "assinante do corte: ${assinante}"
+          echo "identidade esperada do App: ${BOT_NAME}"
+
+          if [ "${assinante}" != "${BOT_NAME}" ]; then
+            echo "::error::Este commit removeu fragmentos de .changes, mas não foi assinado pelo App autenticado (assinante: ${assinante})."
+            echo "::error::A tag v${VERSAO} NÃO foi criada. Se isto foi um corte legítimo, ele não saiu do workflow 'release'."
+            exit 1
           fi
 
       # O merge do PR dispara este workflow e publish-image.yml em paralelo.
@@ -294,10 +330,12 @@ jobs:
         if: steps.pendente.outputs.cortar == 'sim'
         env:
           VERSAO: ${{ steps.pendente.outputs.versao }}
+          BOT_NAME: ${{ steps.app-identity.outputs.name }}
+          BOT_EMAIL: ${{ steps.app-identity.outputs.email }}
         run: |
           set -euo pipefail
-          git config user.name  'deskcomm-release[bot]'
-          git config user.email '${{ steps.token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          git config user.name  "${BOT_NAME}"
+          git config user.email "${BOT_EMAIL}"
           # Tag ANOTADA: guarda autor e data, e é o que `git describe
           # --exact-match` do agent.sh espera encontrar na VPS.
           git tag -a "v${VERSAO}" -m "v${VERSAO}"
