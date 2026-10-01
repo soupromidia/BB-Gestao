@@ -4,10 +4,10 @@ O caminho alvo de deploy **não constrói nada na VPS**: o CI publica a imagem n
 GHCR e a VPS só puxa. Construir localmente é exceção de emergência, e tem custo —
 está documentado no fim.
 
-> **Estado da Sprint 0:** a Etapa 3 termina na publicação privada do trio
-> `sha-<SHA completo>`. Release SemVer, `stable` e autenticação read-only da VPS no GHCR
-> ainda não estão operacionais. Portanto, a parte de VPS deste runbook continua como alvo
-> das etapas seguintes e não deve ser usada para consumir os packages da Promidia ainda.
+> **Estado da Sprint 0:** a Etapa 4 publica o trio privado `sha-<SHA completo>` e o promove
+> sem rebuild para SemVer e `stable`. A autenticação read-only da VPS no GHCR ainda pertence
+> a etapa posterior. Portanto, a parte de VPS deste runbook continua bloqueada até essa
+> credencial e os fallbacks de produção serem fechados.
 
 ---
 
@@ -62,10 +62,10 @@ curl -s -o /dev/null -w "%{http_code}\n" https://<DOMAIN>/
 
 ---
 
-## 3. Fluxo ativo da Etapa 3 (do código ao GHCR)
+## 3. Fluxo ativo da Etapa 4 (do código ao GHCR)
 
 ```
-commit → push → PR → merge na main → CI publica e valida o trio sha-<SHA completo>
+main → sha-<commit> → vX.Y.Z → validação do trio → stable → GitHub Release
 ```
 
 1. **Commit + push** numa branch de feature. Trabalho que fica só no disco da
@@ -78,13 +78,69 @@ commit → push → PR → merge na main → CI publica e valida o trio sha-<SHA
    da matriz, do smoke da imagem publicada/reutilizada do app e da validação remota dos
    labels OCI. Ele pode ser configurado como required check, mas esse estado da branch
    protection do fork ainda precisa ser verificado/configurado externamente.
-3. **Fim da Etapa 3.** Não há deploy na VPS neste fluxo. SemVer e `stable` serão promoção
-   do mesmo artefato, sem rebuild, na Etapa 4. O pull autenticado da VPS será configurado
-   posteriormente. `latest` não é publicado por este fork.
+3. **Corte revisável.** O dispatch de `release.yml` calcula a linha Promidia a partir dos
+   fragmentos e abre o PR de release. A primeira versão é `v0.1.0`; o histórico upstream
+   permanece no CHANGELOG, fora desse cálculo.
+4. **Tag Git.** O merge do PR aguarda `imagens-ok` aprovar aquele mesmo commit; só então o App
+   cria `vX.Y.Z` na `main`. A tag dispara um novo run de `release.yml`; `publish-image.yml`
+   não reage a tags.
+5. **Preflight e SemVer.** O job autenticado resolve o commit da tag, exige as três imagens
+   `sha-<commit>`, valida `linux/amd64`, revisão e labels OCI, e só então copia os manifests
+   por digest para `vX.Y.Z`. Não há build. SemVer existente só é aceita com o mesmo digest.
+6. **Canal e release.** Depois de verificar o trio SemVer, o job captura os três `stable`,
+   move o canal, verifica o trio e publica a GitHub Release. `latest` não existe neste fluxo.
+
+O GHCR não oferece alteração atômica entre três packages. A garantia é: uma promoção por vez,
+preflight integral, verificação antes e depois e rollback compensatório para refs anteriores.
+Se a primeira promoção falhar depois de criar apenas parte de `stable`, o run fica vermelho e
+o operador deve reexecutar a mesma release para completar o trio; não deve apagar versions do
+GHCR, porque uma version pode carregar também as tags SHA e SemVer imutáveis.
 
 ---
 
-## 4. Exceção: imagem construída na VPS
+## 4. Rollback operacional
+
+Se a falha ocorrer durante a promoção `sha-<commit>` → `vX.Y.Z`, `stable` ainda não foi
+tocada. As tags SemVer que já ficaram corretas permanecem imutáveis; reexecute o mesmo run.
+O preflight reutiliza as corretas, promove as ausentes e falha fechado se encontrar qualquer
+digest divergente.
+
+### Tentativa de `stable` que falhou parcialmente
+
+1. Não faça deploy e preserve o run vermelho.
+2. Leia no log o estado anterior capturado para app, worker e scheduler.
+3. Se os três refs anteriores existiam, o próprio job tenta restaurá-los e verifica os digests.
+4. Mesmo com restauração completa, a execução termina em falha e exige revisão humana.
+5. Se era a primeira release e algum ref anterior era ausente, reexecute o job da **mesma tag**.
+   O fluxo reutiliza as SemVer corretas e completa somente o que falta. Não apague package
+   versions para tentar restaurar "ausência".
+
+### Rollback deliberado de produção
+
+Escolha uma tag `vX.Y.Z` que já teve o job `promover-release` verde. Reexecute o run de push
+dessa tag no GitHub Actions. O preflight prova novamente o trio SHA/SemVer e move `stable` de
+volta para os três digests antigos, sem reconstruir `vX.Y.Z`.
+
+Com acesso autenticado ao GHCR, confirme o resultado:
+
+```bash
+for image in bb-gestao-app bb-gestao-worker bb-gestao-scheduler; do
+  version_digest=$(docker buildx imagetools inspect \
+    "ghcr.io/soupromidia/${image}:vX.Y.Z" --format '{{.Manifest.Digest}}')
+  stable_digest=$(docker buildx imagetools inspect \
+    "ghcr.io/soupromidia/${image}:stable" --format '{{.Manifest.Digest}}')
+  printf '%s vX.Y.Z=%s stable=%s\n' "$image" "$version_digest" "$stable_digest"
+  test "$version_digest" = "$stable_digest"
+done
+```
+
+Somente depois dos três pares iguais a instalação pode voltar para `vX.Y.Z`. O rollback de
+produção promove uma release validada; nunca reconstrói uma versão antiga. O health da app
+responde o `sha-<commit>` original, pois a promoção SemVer preserva o artefato byte a byte.
+
+---
+
+## 5. Exceção: imagem construída na VPS
 
 Só quando é preciso validar algo em produção **antes** de a imagem oficial
 existir (ex.: CI ainda rodando e um bug bloqueando o usuário).

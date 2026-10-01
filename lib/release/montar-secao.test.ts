@@ -5,7 +5,10 @@ import { parseFragmento } from "./fragmento";
 import { aplicarNoChangelog, montarSecao } from "./montar-secao";
 
 /** URL sintética: este arquivo é varrido pela catraca de marca e não nomeia o repo. */
-const comparar = (de: string, para: string) => `https://exemplo.test/compare/${de}...${para}`;
+const comparar = (anterior: string | null, atual: string) =>
+  anterior
+    ? `https://exemplo.test/compare/v${anterior}...${atual === "HEAD" ? atual : `v${atual}`}`
+    : `https://exemplo.test/releases/tag/v${atual}`;
 
 function frag(over: {
   impacto?: string;
@@ -107,6 +110,17 @@ describe("montarSecao — o que a TELA da VPS vai mostrar", () => {
     expect(texto).toContain("[Não lançado]: https://exemplo.test/compare/v1.6.1...HEAD");
     expect(texto).toContain("[1.6.1]: https://exemplo.test/compare/v1.6.0...v1.6.1");
     expect(texto).not.toContain("compare/v1.5.0...HEAD");
+  });
+
+  it("a primeira versão aponta para a própria release, sem inventar uma tag anterior", () => {
+    const texto = aplicarNoChangelog(
+      CABECALHO,
+      montarSecao([frag({})], "0.1.0", "2026-10-01"),
+      null,
+      comparar,
+    );
+    expect(texto).toContain("[0.1.0]: https://exemplo.test/releases/tag/v0.1.0");
+    expect(texto).not.toContain("v0.0.0");
   });
 
   it("recusa CHANGELOG sem a âncora, em vez de inserir em lugar nenhum", () => {

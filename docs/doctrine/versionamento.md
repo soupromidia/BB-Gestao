@@ -94,6 +94,11 @@ Com o número derivado, a pergunta *"qual é a próxima versão?"* deixa de ter 
 ter **resposta**: é função do conjunto de fragmentos acumulados, e duas sessões que rodem o
 cálculo obtêm o mesmo resultado porque olham para o mesmo conjunto.
 
+**Bootstrap da Promidia:** o histórico do upstream permanece no `CHANGELOG.md`, abaixo do
+marcador de separação, mas não participa do cálculo. A primeira release desta linha é
+congelada em `v0.1.0`; a partir dela, os fragmentos e a régua acima calculam as tags `v0.1.1`,
+`v0.2.0`, `v1.0.0` e assim por diante. Isso preserva proveniência sem herdar a numeração `1.20.0`.
+
 ### A tag nasce no CI
 
 `git tag` na máquina de alguém é o ponto onde o número deixa de ser revisável. A tag é criada
@@ -104,15 +109,15 @@ Três razões medidas, todas com consequência no parque instalado:
 1. **A tag é o gatilho de atualização de todo mundo.** `hostgator-setup-kit/agent.sh` faz
    `git fetch --tags` e `hostgator-setup-kit/update.sh` puxa a imagem **por número**. Tag
    errada não é erro cosmético de changelog: é o seletor do que cada VPS baixa.
-2. **Uma tag `v*` de qualquer branch move o canal `stable`.** O workflow de publicação não
-   testa se o commit está na `main`.
+2. **Uma tag fora da `main` não pode selecionar produção.** O job de promoção resolve o commit
+   da tag e exige que ele seja ancestral de `origin/main` antes de consultar ou mover imagens.
 3. **Mover uma tag já publicada quebra a VPS e mente sobre o motivo.** O `git fetch --tags`
    do `update.sh` recusa a tag movida (`would clobber existing tag`) e sai com erro — que o
    script relata como *"não consegui falar com o GitHub"*. O operador fica no código antigo
    procurando um problema de rede que não existe.
 
 Daí a regra que a doutrina de packaging já enuncia e esta reforça: **versão publicada é
-imutável**. Corrige-se com `X.Y.Z+1`, nunca republicando o mesmo número.
+imutável**. Corrige-se com uma nova tag `vX.Y.Z`, nunca republicando o mesmo número.
 
 ---
 
@@ -187,8 +192,8 @@ git ls-remote --tags --refs origin 'refs/tags/v*' \
   | sed 's#.*refs/tags/v##' | awk '!/-/' | sort -V | tail -1
 ```
 
-O `awk '!/-/'` descarta prerelease e tag de fork — o repositório carrega `v1.1.1-jmpo.1` e
-`jmpo/v1.4.0`, que existem para **não** colidir com a numeração daqui.
+O `awk '!/-/'` descarta prerelease. Antes da primeira publicação Promidia, a saída vazia é o
+estado esperado; o cortador usa o bootstrap `v0.1.0`, não as seções históricas do upstream.
 
 E o `package.json` **não** é a fonte: ele segue em `0.1.0`, de propósito. A fonte é a tag
 `v*` mais a seção do `CHANGELOG.md`.
@@ -201,7 +206,8 @@ E o `package.json` **não** é a fonte: ele segue em `0.1.0`, de propósito. A f
    fazer.
 2. **Ninguém digita o número.** Ele é calculado a partir dos fragmentos declarados.
 3. **A tag nasce no CI, de commit contido na `main`.** Nunca da máquina de alguém.
-4. **Versão publicada é imutável.** Conserto é `X.Y.Z+1`; nunca republicar o mesmo número.
+4. **Versão publicada é imutável.** Conserto recebe uma nova tag `vX.Y.Z`; nunca republica o
+   mesmo número.
 5. **Todo PR que muda comportamento traz seu fragmento.** Sem ele, o texto que chega ao
    operador é reconstruído por quem não estava lá — ou não chega.
 6. **Bump não pode exigir edição manual de arquivo na VPS.** Se exigir, é major e vem com

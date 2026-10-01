@@ -4,10 +4,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Na Etapa 3, somente um push da `main` pode publicar `sha-<commit>`, e a tag
- * imutável não pode ser reapontada. As guardas históricas de criação de tag
- * SemVer em `release.yml` permanecem documentadas aqui para a Etapa 4, mas não
- * disparam o workflow de imagens atual.
+ * Somente um push da `main` publica `sha-<commit>`. A Etapa 4 mantém a criação
+ * da tag Git pelo App e reage a essa tag em `release.yml`, sem transformar
+ * `publish-image.yml` num segundo caminho de build.
  */
 const RAIZ = process.cwd();
 const publish = fs.readFileSync(path.join(RAIZ, ".github/workflows/publish-image.yml"), "utf8");
@@ -54,23 +53,19 @@ describe("a tag nasce no CI, e nunca do GITHUB_TOKEN", () => {
     expect(release).toContain("secrets.RELEASE_APP_PRIVATE_KEY");
   });
 
-  it("nenhum job do release pede escopo de escrita ao GITHUB_TOKEN", () => {
-    const escritas = release
-      .split("\n")
-      .filter((l) => /^\s+(contents|pull-requests|packages):\s*write\s*$/.test(l));
-    expect(escritas, "escrita pelo GITHUB_TOKEN: quem escreve aqui tem que ser o App").toEqual([]);
+  it("o job que cria a tag não recebe escrita do GITHUB_TOKEN", () => {
+    const t = job(release, "cortar-tag");
+    expect(t).not.toContain("contents: write");
+    expect(t).not.toContain("packages: write");
+    expect(t).toContain("steps.token.outputs.token");
   });
 
-  it("o corte da tag prova que as imagens saíram — a falha aqui é silenciosa por natureza", () => {
-    const t = job(release, "cortar-tag");
-    // A sonda prende o COMPORTAMENTO (consultar o manifesto no registro público),
-    // não o nome da função — que já mudou uma vez, quando a conferência passou a
-    // comparar digest em vez de código de status (issue #488).
-    expect(t, "o corte não consulta mais o registro").toMatch(/ghcr\.io\/v2\//);
-    for (const img of ["bb-gestao-app", "bb-gestao-worker", "bb-gestao-scheduler"]) {
-      expect(t, `a conferência não cobre ${img}`).toContain(img);
-    }
-    expect(t).toMatch(/::error::/);
+  it("a promoção usa o GITHUB_TOKEN apenas nos escopos que realmente escreve", () => {
+    const t = job(release, "promover-release");
+    expect(t).toContain("contents: write");
+    expect(t).toContain("packages: write");
+    expect(t).toContain("secrets.GITHUB_TOKEN");
+    expect(t).not.toMatch(/PAT|password:\s*\$\{\{\s*secrets\.(?!GITHUB_TOKEN)/);
   });
 
   it("a tag exige que o push tenha CONSUMIDO fragmentos, não só que haja versão nova no CHANGELOG", () => {
@@ -91,10 +86,20 @@ describe("a tag nasce no CI, e nunca do GITHUB_TOKEN", () => {
     expect(t).toMatch(/removidos[^\n]*-eq 0/);
     // E a condição que a guarda antiga NÃO tinha: só o App da release corta.
     expect(t).toMatch(/deskcomm-release\[bot\]/);
+    expect(t).toContain("a linha Promidia não ganhou uma seção de release");
   });
 
   it("a tag só é criada em push na main, nunca num dispatch de branch qualquer", () => {
-    expect(job(release, "cortar-tag")).toMatch(/if:\s*github\.event_name == 'push'/);
+    expect(job(release, "cortar-tag")).toContain(
+      "if: github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    );
     expect(release).toMatch(/push:\s*\n\s*branches:\s*\[main\]/);
+  });
+
+  it("a promoção nasce do push de vX.Y.Z, não de dispatch ou release publicada", () => {
+    expect(release).toMatch(/tags:\s*\["v\*"\]/);
+    expect(job(release, "promover-release")).toContain(
+      "if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')",
+    );
   });
 });

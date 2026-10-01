@@ -36,16 +36,19 @@ import { describe, expect, it } from "vitest";
  * imagem, independente — ninguém instala por um número que o instalador não
  * escreveu) e mover o CANAL num job final, quando o conjunto está completo.
  *
- * ## Estado do fork na Etapa 3
+ * ## Estado do fork na Etapa 4
  *
  * O histórico acima continua sendo a razão para nunca mover `stable` por imagem.
- * Nesta etapa o canal não existe no fluxo ativo: este arquivo prova que
- * `publish-image.yml` não o publica nem o promove. A conferência histórica de
- * digest em `release.yml` fica preservada para a implementação da Etapa 4.
+ * `publish-image.yml` continua sem tocar no canal. `release.yml` delega a um
+ * único script serializado: ele valida primeiro o trio SHA e o trio SemVer,
+ * captura todo o estado anterior de `stable`, move os três e verifica o
+ * resultado. Como o GHCR não oferece transação entre packages, falha parcial
+ * aciona rollback compensatório e mantém o workflow vermelho.
  */
 const RAIZ = process.cwd();
 const publish = readFileSync(join(RAIZ, ".github/workflows/publish-image.yml"), "utf8");
 const release = readFileSync(join(RAIZ, ".github/workflows/release.yml"), "utf8");
+const promotion = readFileSync(join(RAIZ, ".github/scripts/promover-release.sh"), "utf8");
 
 /**
  * O corpo de um job, do cabeçalho até o próximo job.
@@ -76,7 +79,7 @@ function corpo(yml: string, nome: string): string {
 
 const IMAGENS = ["bb-gestao-app", "bb-gestao-worker", "bb-gestao-scheduler"];
 
-describe("o canal `stable` permanece fora da Etapa 3", () => {
+describe("o canal `stable` permanece fora do build da main", () => {
   it("o instrumento está vivo: enxerga os jobs de publish-image.yml", () => {
     // Controle positivo. Sem ele, um helper que parou de casar devolve "" e as
     // asserções de ausência abaixo passam por vacuidade — vigiando nada.
@@ -98,30 +101,42 @@ describe("o canal `stable` permanece fora da Etapa 3", () => {
     const needs = /needs:\s*\[([^\]]*)\]/.exec(corpo(publish, "validar-trio-sha"))?.[1];
     expect(needs, "o gate do trio não declara `needs`").toBeDefined();
     expect(needs?.split(",").map((s) => s.trim())).toEqual(["build-and-push"]);
-    expect(corpo(publish, "build-and-push")).toContain(
-      "if: matrix.name == 'bb-gestao-app'",
-    );
-    expect(corpo(publish, "build-and-push")).toContain(
-      "O container do app chega a servir?",
-    );
+    expect(corpo(publish, "build-and-push")).toContain("if: matrix.name == 'bb-gestao-app'");
+    expect(corpo(publish, "build-and-push")).toContain("O container do app chega a servir?");
   });
 
   it("as três imagens são validadas com a tag do mesmo commit", () => {
     const t = corpo(publish, "validar-trio-sha");
     for (const img of IMAGENS) expect(t, `a validação não cita ${img}`).toContain(img);
-    expect(t).toContain('revisao=$(docker image inspect');
+    expect(t).toContain("revisao=$(docker image inspect");
     expect(t).toContain('[ "${revisao}" = "${GITHUB_SHA}" ]');
   });
 });
 
-describe("o corte da release confere o CANAL, não só a existência da versão", () => {
-  it("compara DIGEST — `stable` e a versão têm de ser o mesmo manifesto", () => {
-    const t = corpo(release, "cortar-tag");
-    expect(t, "a conferência não lê digest: `200` na tag `stable` é satisfeito desde a 1.11.0").toContain(
-      "docker-content-digest",
+describe("a release move `stable` somente depois do trio SemVer", () => {
+  it("o job é único, serializado e cobre as três imagens", () => {
+    const t = corpo(release, "promover-release");
+    expect(t).toContain("group: promover-release-${{ github.repository }}");
+    expect(t).toContain("cancel-in-progress: false");
+    expect(t).toContain("bash .github/scripts/promover-release.sh");
+    for (const img of IMAGENS) expect(promotion, `a promoção não cobre ${img}`).toContain(img);
+  });
+
+  it("captura o trio anterior antes da primeira escrita em stable", () => {
+    const captura = promotion.indexOf("# FASE 4:");
+    const movimento = promotion.indexOf("# FASE 5:");
+    const primeiraPromocaoStable = promotion.indexOf(
+      'promote_ref "${IMAGE_NAMESPACE}/${image}@${target_digest}"',
     );
-    expect(t, "a conferência não olha o canal `stable`").toContain("stable");
-    for (const img of IMAGENS) expect(t, `a conferência não cobre ${img}`).toContain(img);
-    expect(t).toMatch(/::error::/);
+    expect(captura).toBeGreaterThan(-1);
+    expect(movimento).toBeGreaterThan(captura);
+    expect(primeiraPromocaoStable).toBeGreaterThan(movimento);
+  });
+
+  it("verifica por digest e tenta rollback, mas não alega atomicidade", () => {
+    expect(promotion).toContain("wait_for_digest");
+    expect(promotion).toContain("rollback_stable");
+    expect(promotion).toContain("GHCR não oferece transação entre packages");
+    expect(promotion).toContain("workflow permanece vermelho mesmo após rollback");
   });
 });

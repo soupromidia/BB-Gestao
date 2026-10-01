@@ -11,7 +11,7 @@ recusado, em [`../adr/0001-packaging-e-distribuicao.md`](../adr/0001-packaging-e
 com a distribuição deste fork superada pelo [`ADR-0002`](../adr/0002-distribuicao-promidia.md).
 Ao mudar um invariante aqui, atualize os dois na mesma sessão.
 
-### Estado vigente da distribuição Promidia (Sprint 0, Etapa 3)
+### Estado vigente da distribuição Promidia (Sprint 0, Etapa 4)
 
 O fluxo ativo deste fork é `push` na `main` → validação/reuso individual das imagens já
 existentes → build somente das ausentes → publicação no GHCR privado com a tag imutável
@@ -21,10 +21,11 @@ existentes → build somente das ausentes → publicação no GHCR privado com a
 - `ghcr.io/soupromidia/bb-gestao-worker`;
 - `ghcr.io/soupromidia/bb-gestao-scheduler`.
 
-Esta etapa **não publica** `latest`, `stable` ou SemVer. A promoção do mesmo artefato SHA
-para SemVer e o avanço conjunto de `stable` pertencem à Etapa 4 e não podem reconstruir a
-imagem. O pull autenticado de produção nos packages privados pertence a etapa posterior;
-nenhuma VPS deve tratar a publicação desta etapa como fluxo de deploy já habilitado.
+O push de uma tag Git `vX.Y.Z` dispara `release.yml`: o workflow autentica no GHCR privado,
+valida o trio `sha-<SHA completo>` e promove os mesmos manifests para `vX.Y.Z`, sem rebuild.
+Somente depois de verificar as três tags SemVer ele captura o estado anterior e move o trio
+`stable`. `latest` não é publicado. O pull autenticado de produção nos packages privados
+pertence a etapa posterior; nenhuma VPS deve tratar esta etapa como deploy já habilitado.
 
 As referências abaixo a releases e instalações legadas registram a doutrina herdada e o
 alvo das etapas seguintes. Em caso de conflito operacional durante a Sprint 0, este bloco e
@@ -159,16 +160,16 @@ OCI — no mínimo `source`, `revision`, `version`, `licenses` — e é constru�
 
 ### 3. Instalação de cliente nunca aponta para tag móvel
 
-Este é o alvo da cadeia completa, ainda não o estado operacional da Etapa 3. A Promidia só
-publica `sha-<SHA completo>` neste momento, e a autenticação read-only da VPS será configurada
-posteriormente. Portanto, nenhuma instalação deve consumir os packages privados ainda.
+A Promidia publica `sha-<SHA completo>` na `main` e promove esse mesmo artefato para SemVer e
+`stable` no corte da release. A autenticação read-only da VPS ainda será configurada em etapa
+posterior. Portanto, nenhuma instalação deve consumir os packages privados até essa etapa.
 
 Os caminhos legados de `install.sh`, `update.sh` e dos templates ainda contêm a política do
 upstream para tags numéricas, `stable` e fallback em `latest`. Eles permanecem por decisão de
 escopo até a Etapa 5; não descrevem tags produzidas pelo workflow atual.
 
-No fluxo final, a instalação gravará no `.env` uma tag SemVer imutável promovida do SHA já
-validado, nunca um canal móvel.
+No fluxo de produção, a instalação gravará no `.env` uma tag SemVer imutável promovida do SHA
+já validado, nunca um canal móvel.
 
 <details>
 <summary>Histórico do upstream que motivou o invariante</summary>
@@ -212,16 +213,22 @@ vai existir porque a v1.2.1 é anterior à criação desse pacote.
 
 ### 4. Tag de versão é imutável; canal é móvel
 
-Na Etapa 3, `sha-<SHA completo>` identifica o commit e nunca é reapontada. Cada membro da
+`sha-<SHA completo>` identifica o commit e nunca é reapontada. Cada membro da
 matriz consulta sua própria referência antes do build. Se ela não existe, publica uma vez; se
 existe com os labels OCI e a plataforma esperados, reutiliza sem build nem push. Referência
 existente incompatível, ou falha que não prove ausência, encerra aquele membro sem publicar.
 Isso permite recuperar publicação parcial em `Re-run failed jobs` e `Re-run all jobs`.
 
-Na Etapa 4, `vX.Y.Z` e a imagem `X.Y.Z` deverão apontar para esse mesmo artefato **para
-sempre**, por promoção sem rebuild. Republicar uma versão será proibido; `stable` será o único
-canal móvel previsto e só poderá avançar com o trio validado. `latest`, `main` e `X.Y` não fazem
-parte da política do fork.
+As tags Git e de imagem `vX.Y.Z` apontam para esse mesmo artefato **para sempre**, por promoção
+sem rebuild. Se a SemVer já existe com o digest esperado, a execução a reutiliza; se diverge,
+falha antes de sobrescrever. `stable` é o único canal móvel previsto e só avança depois que o
+trio SemVer foi validado. `latest`, `main`, `vX.Y` e aliases `X.Y.Z` sem `v` não fazem parte da
+política do fork.
+
+O GHCR não oferece uma transação atômica entre três packages. A garantia real é processual:
+uma promoção por vez, preflight integral antes de qualquer SemVer, verificação integral antes
+de `stable`, captura dos três refs anteriores, verificação posterior e rollback compensatório
+quando os refs anteriores existiam. Mesmo com rollback bem-sucedido, o run falha.
 
 - **Por quê:** a imutabilidade da tag é o que torna a pinagem do invariante 3 uma garantia em
   vez de uma esperança. Se `1.2.1` puder ser reescrita, todo cliente "pinado" continua exposto
@@ -279,13 +286,12 @@ default que preserva o comportamento anterior**; se ela precisa existir, quem a 
 
 ### 7. A versão que roda é observável de fora
 
-`GET /api/v1/health` responde a versão real da imagem em execução.
+`GET /api/v1/health` responde a identidade real do artefato em execução.
 
-> **Vale a partir da próxima release.** Nenhuma imagem já publicada carrega
-> `APP_VERSION` — medido no upstream: `docker run --rm ghcr.io/melgarafael/deskcommcrm:1.2.1 node -e
-> 'console.log(process.env.APP_VERSION)'` → `undefined`. Todo o parque instalado hoje
-> responde `desconhecido`, que é a resposta honesta e o motivo de o fallback não ser mais
-> um número plausível. O item 9 do checklist de release reprova contra a 1.2.1 de propósito.
+Na cadeia Promidia, `APP_VERSION` é gravada no build imutável como `sha-<commit completo>`.
+Promover esse manifest para `vX.Y.Z` não altera bytes nem variáveis internas; portanto o health
+continua respondendo o SHA de procedência, e não finge que houve um rebuild SemVer. Associar
+essa resposta à release é feito pelos digests registrados no run de promoção.
 
 - **Por quê:** é o fecho do laço dos invariantes 2 e 3. Procedência sem observabilidade só
   serve a quem tem acesso ao registry; o suporte precisa da resposta a partir da instalação.
@@ -380,9 +386,9 @@ mesma VPS **recusa** mexer, e diz por quê.
 
 | Tag | Estado no fork | Move? | O que significa |
 |---|---|---|---|
-| `sha-<SHA completo>` | **ativa na Etapa 3** | **não** | artefato validado de um commit da `main`, promovível sem rebuild |
-| `X.Y.Z` | futura, Etapa 4 | **não** | release SemVer apontando para o artefato SHA já validado |
-| `stable` | futuro, Etapa 4 | sim, somente em bloco | trio da última release validada |
+| `sha-<SHA completo>` | ativa | **não** | artefato validado de um commit da `main`, promovível sem rebuild |
+| `vX.Y.Z` | ativa na Etapa 4 | **não** | release SemVer apontando para o mesmo digest do SHA validado |
+| `stable` | ativo na Etapa 4 | sim, por processo coordenado | trio da release validada selecionada |
 | `latest` | **não publicado** | — | proibido pela decisão do ADR-0002 |
 | `main` | **não publicado** | — | não é canal de imagem neste fork |
 
@@ -395,8 +401,8 @@ desses eventos é um momento em que alguém escolheu correr o risco de uma vers�
 nenhum deles avisa quando dá errado. Quem descobre é o cliente, por telefone.
 
 O histórico do upstream usava `latest` para o topo da `main`; o fork não preserva esse canal.
-Durante a transição, referências a `stable` ou a tags numéricas nos scripts legados não
-significam que esses canais já sejam publicados pela Promidia.
+Durante a transição, os scripts legados ainda não constituem autorização para uma VPS consumir
+esses canais: falta implementar a autenticação read-only e fechar os fallbacks na Etapa 5.
 
 ---
 
@@ -422,81 +428,23 @@ Um bump de versão **não pode** exigir:
 
 ## Checklist de release
 
-> **Ainda não operacional no fork.** A Etapa 3 produz somente `sha-<SHA completo>`. Este
-> checklist será alinhado ao fluxo de promoção sem rebuild na Etapa 4; não crie tag, release
-> ou `stable` com o workflow atual.
+Verificável e na ordem. Os packages são privados; `401`/`403` nunca provam ausência.
 
-Verificável, na ordem. Nenhum item é "conferir se está tudo bem".
-
-Os packages da Promidia são **privados**, conforme o ADR-0002. Não existe sonda anônima válida
-para este checklist: `401` ou `403` indicam ausência ou insuficiência de credencial e nunca
-provam que uma tag não existe. Instalações de produção precisarão autenticação read-only de
-menor privilégio no GHCR; a implementação operacional dessa autenticação será feita em etapa
-posterior da Sprint 0. Esta etapa não define token, secret nem comando de login e não altera a
-visibilidade dos packages.
-
-```
-[ ] 1. CHANGELOG.md tem a seção da versão, com o que muda para quem já instalou
-[ ] 2. Nenhuma variável nova é obrigatória sem default (grep no diff de .env.example)
-[ ] 3. O número da versão NUNCA foi publicado antes:
-       git tag --list 'vX.Y.Z'                     → vazio
-       A verificação de colisão no GHCR exige acesso autenticado e será
-       operacionalizada em etapa posterior; 401/403 não aprovam este item
-[ ] 4. Os pins upstream foram revisitados: `waha`, `srh`, `redis`, `caddy`, `postgres`.
-       Bumpar ou confirmar que ficam — congelar sem revisar é como o `srh` ficou
-       três versões atrás sem ninguém decidir isso
-[ ] 5. `git tag vX.Y.Z && git push origin vX.Y.Z` — a partir de um commit da `main`
-[ ] 6. O run de publicação ficou verde:
-       gh run list --workflow=publish-image.yml --limit 3
-[ ] 7. As TRÊS imagens privadas existem nesta versão, verificadas por CI ou operador
-       autenticado no GHCR. Sem credencial, ou diante de 401/403, INTERROMPA:
-       não torne o package público e não trate o resultado como ausência da imagem
-[ ] 8. Com acesso autenticado ao GHCR, a imagem reporta a versão certa:
-       docker run --rm ghcr.io/soupromidia/bb-gestao-app:X.Y.Z \
-         node -e 'console.log(process.env.APP_VERSION)'   → X.Y.Z
-[ ] 9. `gh release create vX.Y.Z` com as notas do CHANGELOG
-[ ] 10. SÓ AGORA: `stable` e X.Y.Z são o MESMO digest, nas três imagens:
-        for i in bb-gestao-app bb-gestao-worker bb-gestao-scheduler; do
-          for t in X.Y.Z stable; do
-            echo -n "$i:$t "; docker buildx imagetools inspect \
-              ghcr.io/soupromidia/$i:$t --format '{{.Manifest.Digest}}'; done; done
-        → o par de cada imagem tem que bater
-        Não bateu? Alguma coisa republicou depois do push da tag. NÃO siga:
-        um canal apontando para build diferente da versão é o invariante 3
-        quebrado dentro de casa.
-[ ] 11. Apagar tags de branch dos três pacotes — `docs-doutrina-packaging` e
-        qualquer outra que tenha nascido de um `workflow_dispatch` de ensaio.
-        Tag de branch é artefato de trabalho: se ficar, vira canal órfão que
-        alguém pina por engano achando que é release, e ela nunca mais se move.
-        O registry já carrega uma dessas (`quebrada-teste`) como lembrete.
-
-> **Por que a checagem de `stable` é o item 10 e não o 8.** Ela já foi o 8, antes do
-> `gh release create` — e nessa ordem ela não provava nada. Medido na v1.3.0: o
-> `release: published` estava ligado no workflow, `gh release create` disparou um
-> segundo build do mesmo commit, e esse build **moveu `1.3.0` e `1.3`** sem mover
-> `stable`. A conferência do item 8 tinha passado, verde e honesta, cinco minutos
-> antes do ato que a invalidou. **Verificação que roda antes do passo que pode
-> quebrá-la é verificação de nada.** O gatilho foi removido (guarda em
-> `tests/unit/packaging-artefato-do-cliente.test.ts`), e a conferência foi para
-> depois — cinto e suspensório, porque o próximo jeito de republicar uma tag ainda
-> não foi inventado.
-
-        EXIGE ESCOPO QUE O TOKEN PADRÃO DO `gh` NÃO TEM. Medido no corte da
-        1.3.0: com `gist, read:org, repo, workflow` a API devolve 403 tanto para
-        listar quanto para apagar versão de pacote. Antes de chegar aqui:
-            gh auth refresh -h github.com -s read:packages,delete:packages
-        Sem isso o item fica pendente e a tag de ensaio segue viva — foi o que
-        aconteceu na 1.3.0. (Resolvido em 2026-08-14: as três versions foram
-        apagadas e a tag responde 404 nos três pacotes. Apague a **version**, e
-        só depois de conferir que ela não carrega OUTRA tag junto — no GHCR se
-        apaga version, não tag, e uma version com `1.3.0` ao lado levaria a
-        release embora.)
-[ ] 12. Ensaio de atualização numa instalação real (não fresca): update.sh a partir da
-        versão anterior, e o /api/v1/health responde X.Y.Z
+```text
+[ ] 1. O commit da main tem `imagens-ok` verde e as três tags sha-<commit completo>.
+[ ] 2. "Run workflow" em release.yml abriu o PR calculado; para o bootstrap, v0.1.0.
+[ ] 3. O PR contém a seção do CHANGELOG e consome os fragmentos esperados.
+[ ] 4. `imagens-ok` aprovou o SHA do merge; só então o App criou a tag Git vX.Y.Z.
+[ ] 5. O run de tag de release.yml terminou verde no job promover-release.
+[ ] 6. O log registra os três digests SHA, os mesmos três digests SemVer e stable.
+[ ] 7. A GitHub Release vX.Y.Z existe; ela é consequência, não fonte das imagens.
+[ ] 8. Antes de deploy, a VPS está autenticada read-only no GHCR e usa vX.Y.Z nos três serviços.
+[ ] 9. O ensaio de atualização responde o sha-<commit> promovido em /api/v1/health.
 ```
 
-O item 12 é o único que exige VPS. Ele não é opcional: a atualização é o caminho que **todo o
-parque instalado** percorre, e é o único que a suíte de CI não exercita.
+O job de promoção é idempotente: SemVer correta é reutilizada; SemVer divergente falha sem
+sobrescrever; `stable` já correto não é movido. Nenhum item autoriza tag manual, rebuild de
+release, package público ou fallback para `latest`, upstream ou build local.
 
 ---
 

@@ -99,14 +99,15 @@ const ANCORA = /^##\s+\[Não lançado\].*$/m;
  * não tem linha `[1.6.0]:` e o `[Não lançado]` ainda compara contra `v1.5.0` —
  * uma versão inteira depois. Quem escreve à mão esquece; quem monta, não.
  *
- * @param compararUrl função que devolve a URL de comparação entre duas tags.
+ * @param versaoUrl função que devolve a URL da versão. Na primeira release,
+ *   `anterior` é `null`; nas seguintes, a URL normalmente compara duas tags.
  *   Entra por parâmetro porque este arquivo não pode nomear o repositório.
  */
 export function aplicarNoChangelog(
   raw: string,
   secao: SecaoMontada,
-  anterior: string,
-  compararUrl: (de: string, para: string) => string,
+  anterior: string | null,
+  versaoUrl: (anterior: string | null, atual: string) => string,
 ): string {
   if (!ANCORA.test(raw)) {
     throw new Error("CHANGELOG.md sem `## [Não lançado]`: não sei onde inserir a seção");
@@ -117,8 +118,8 @@ export function aplicarNoChangelog(
   // é prosa escrita à mão que neste repo rotineiramente carrega shell e regex.
   let saida = raw.replace(ANCORA, (ancora) => `${ancora}\n\n${secao.texto}`);
 
-  const refNova = `[${secao.versao}]: ${compararUrl(`v${anterior}`, `v${secao.versao}`)}`;
-  const refNaoLancado = `[Não lançado]: ${compararUrl(`v${secao.versao}`, "HEAD")}`;
+  const refNova = `[${secao.versao}]: ${versaoUrl(anterior, secao.versao)}`;
+  const refNaoLancado = `[Não lançado]: ${versaoUrl(secao.versao, "HEAD")}`;
 
   if (/^\[Não lançado\]:\s+\S+$/m.test(saida)) {
     saida = saida.replace(/^\[Não lançado\]:\s+\S+$/m, () => `${refNaoLancado}\n${refNova}`);

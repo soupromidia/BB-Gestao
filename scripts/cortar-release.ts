@@ -18,7 +18,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { calcularBump, type Fragmento, parseFragmento, proximaVersao } from "../lib/release/fragmento";
+import { calcularBump, type Fragmento, parseFragmento } from "../lib/release/fragmento";
+import { proximaVersaoDaLinha, versaoAtualDaLinha } from "../lib/release/linha";
 import { aplicarNoChangelog, montarSecao } from "../lib/release/montar-secao";
 
 const RAIZ = path.resolve(__dirname, "..");
@@ -26,7 +27,10 @@ const DIR_FRAGMENTOS = path.join(RAIZ, ".changes");
 const CHANGELOG = path.join(RAIZ, "CHANGELOG.md");
 const REPO = "soupromidia/BB-Gestao";
 
-const compararUrl = (de: string, para: string) => `https://github.com/${REPO}/compare/${de}...${para}`;
+const versaoUrl = (anterior: string | null, atual: string) =>
+  anterior
+    ? `https://github.com/${REPO}/compare/v${anterior}...${atual === "HEAD" ? atual : `v${atual}`}`
+    : `https://github.com/${REPO}/releases/tag/v${atual}`;
 
 /** `.gitkeep` e qualquer não-`.md` ficam de fora; o diretório guarda só fragmento. */
 export function arquivosDeFragmento(dir: string): string[] {
@@ -53,34 +57,16 @@ function lerFragmentos(dir: string): Fragmento[] {
   return lidos;
 }
 
-/**
- * A base é a seção mais nova do CHANGELOG, não a maior tag — o repositório
- * carrega `v1.1.1-jmpo.1` e `jmpo/v1.4.0`, que existem justamente para não
- * colidir com a numeração daqui.
- */
-function versaoBase(changelog: string): string {
-  for (const linha of changelog.split("\n")) {
-    const m = /^##\s+\[(\d+\.\d+\.\d+)\]/.exec(linha);
-    if (m?.[1]) return m[1];
-  }
-  throw new Error("CHANGELOG.md sem nenhuma seção `## [X.Y.Z]`");
-}
-
-/** Só para conferência: um aviso, nunca uma recusa — o CI clona raso e não vê tag. */
-function maiorTagLocal(): string | null {
+/** A tag exata serve só para distinguir PR cortado de release já publicada. */
+function tagLocalExiste(versao: string): boolean {
   try {
-    const saida = execFileSync("git", ["tag", "--list", "v*.*.*"], { cwd: RAIZ, encoding: "utf8" });
-    const versoes = saida
-      .split("\n")
-      .map((t) => t.trim().replace(/^v/, ""))
-      .filter((t) => /^\d+\.\d+\.\d+$/.test(t))
-      .sort((a, b) => {
-        const [A, B] = [a.split(".").map(Number), b.split(".").map(Number)];
-        return (A[0]! - B[0]!) || (A[1]! - B[1]!) || (A[2]! - B[2]!);
-      });
-    return versoes.at(-1) ?? null;
+    execFileSync("git", ["rev-parse", "--verify", `refs/tags/v${versao}`], {
+      cwd: RAIZ,
+      stdio: "ignore",
+    });
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -106,21 +92,23 @@ function main(argv: readonly string[]): number {
   // na main trouxe uma versão nova. Imprime só o número, sem mais nada, para
   // caber num `$(...)`.
   if (soAVersao) {
-    process.stdout.write(`${versaoBase(fs.readFileSync(CHANGELOG, "utf8"))}\n`);
+    const atual = versaoAtualDaLinha(fs.readFileSync(CHANGELOG, "utf8"));
+    // Antes do primeiro PR de release, ausência é estado esperado: o job que
+    // observa pushes comuns da main precisa sair verde sem inventar uma tag.
+    if (atual) process.stdout.write(`${atual}\n`);
     return 0;
   }
 
   const fragmentos = lerFragmentos(DIR_FRAGMENTOS);
   const changelog = fs.readFileSync(CHANGELOG, "utf8");
-  const base = versaoBase(changelog);
+  const base = versaoAtualDaLinha(changelog);
 
   if (fragmentos.length === 0) {
-    const tag = maiorTagLocal();
     // Terceiro desfecho, e não uma recusa: depois de `--escrever` o estado
     // normal da branch de release é exatamente este — `.changes/` vazio e a
     // seção nova à frente da última tag, porque a tag só nasce no merge.
-    if (tag && tag !== base) {
-      process.stdout.write(`já cortado: ${base} aguarda a tag (última publicada: ${tag})\n`);
+    if (base && !tagLocalExiste(base)) {
+      process.stdout.write(`já cortado: ${base} aguarda a tag\n`);
       return 0;
     }
     process.stderr.write(
@@ -131,10 +119,14 @@ function main(argv: readonly string[]): number {
   }
 
   const bump = calcularBump(fragmentos.map((f) => f.impacto));
-  const versao = proximaVersao(base, bump);
+  const versao = proximaVersaoDaLinha(changelog, bump);
   const secao = montarSecao(fragmentos, versao, hoje());
 
-  process.stdout.write(`${base} + ${bump} = ${versao}  (${fragmentos.length} fragmento(s))\n`);
+  process.stdout.write(
+    base
+      ? `${base} + ${bump} = ${versao}  (${fragmentos.length} fragmento(s))\n`
+      : `linha Promidia: primeira release = ${versao}  (${fragmentos.length} fragmento(s); impacto agregado: ${bump})\n`,
+  );
   for (const f of fragmentos) {
     process.stdout.write(`  ${f.impacto.padEnd(16)} ${f.secao.padEnd(11)} ${f.titulo}\n`);
   }
@@ -144,7 +136,7 @@ function main(argv: readonly string[]): number {
     return 0;
   }
 
-  fs.writeFileSync(CHANGELOG, aplicarNoChangelog(changelog, secao, base, compararUrl));
+  fs.writeFileSync(CHANGELOG, aplicarNoChangelog(changelog, secao, base, versaoUrl));
   for (const f of fragmentos) fs.rmSync(path.join(DIR_FRAGMENTOS, f.arquivo));
   process.stdout.write(`\nCHANGELOG.md atualizado; ${fragmentos.length} fragmento(s) consumido(s).\n`);
   process.stdout.write("A tag NÃO é criada aqui — ela nasce no CI, do merge do PR de release.\n");

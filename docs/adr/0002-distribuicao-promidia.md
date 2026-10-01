@@ -71,8 +71,9 @@ processos numa imagem única.
 
 ### D4 — A primeira linha de versão da Promidia começa em `v0.1.0`
 
-Tags Git usam o prefixo `v`; tags das imagens usam o número sem o prefixo. A primeira release
-será, portanto, `v0.1.0` no Git e `0.1.0` no GHCR.
+A tag Git e as tags SemVer das três imagens usam a mesma representação canônica com prefixo `v`.
+A primeira release será, portanto, `v0.1.0` tanto no Git quanto no GHCR. Não existe alias
+`0.1.0` sem o prefixo.
 
 O histórico do upstream será preservado como proveniência, mas não determinará a numeração da
 linha Promidia.
@@ -90,7 +91,7 @@ release não reconstrói as imagens.
 
 ### D6 — Tags SemVer e SHA são imutáveis; `stable` é coordenada
 
-- `sha-<commit>` e `X.Y.Z` nunca são movidas nem republicadas;
+- `sha-<commit>` e `vX.Y.Z` nunca são movidas nem republicadas;
 - `stable` é móvel e representa a última release homologada;
 - `stable` só avança depois que app, worker e scheduler da mesma versão foram validados;
 - uma falha em qualquer integrante impede a promoção do trio;
@@ -147,9 +148,23 @@ conhecido e eliminação de dependência silenciosa da distribuição upstream.
 **Pagamos:** autenticação do GHCR em cada VPS, operação de três packages privados e necessidade
 de bootstrap explícito da linha `v0.1.0`.
 
-**Exigimos da implementação futura:** migração coordenada de namespace; autenticação de pull;
-promoção sem rebuild; validação do trio; falha fechada; rollback conjunto; e gates que impeçam
-referências operacionais ao upstream.
+**Exigimos da cadeia:** migração coordenada de namespace; autenticação de pull; promoção sem
+rebuild; validação do trio; falha fechada; rollback conjunto; e gates que impeçam referências
+operacionais ao upstream. O estado de cada parte está registrado abaixo.
 
 **Não muda:** multi-tenancy, branding por instalação/organização, schema, comportamento da
 aplicação ou configuração do BB Cursos.
+
+## Estado de implementação
+
+- **Etapa 3 concluída:** a `main` publica e valida somente o trio imutável
+  `sha-<commit completo>` em `linux/amd64`.
+- **Etapa 4 implementada:** a tag Git `vX.Y.Z` promove os mesmos manifests para `vX.Y.Z`,
+  valida o trio, move `stable` e só depois cria a GitHub Release. Não há rebuild.
+- **Pendente para produção:** autenticação read-only da VPS e remoção dos fallbacks legados.
+
+O avanço de `stable` não é atomicamente transacional: o GHCR não oferece uma transação entre
+três packages. O processo serializa releases, captura o trio anterior, verifica cada fase e
+tenta rollback compensatório em falha parcial. Na primeira release, refs anteriormente
+ausentes não são apagados às cegas; o run falha e a recuperação segura é reexecutar a mesma
+release até o trio convergir, sem deploy durante o estado parcial.
