@@ -52,9 +52,23 @@ describe("a tag nasce no CI, e nunca do GITHUB_TOKEN", () => {
     expect(release.match(/client-id: \$\{\{ vars\.RELEASE_APP_CLIENT_ID \}\}/g)).toHaveLength(2);
     expect(release.match(/private-key: \$\{\{ secrets\.RELEASE_APP_PRIVATE_KEY \}\}/g)).toHaveLength(2);
     expect(release.match(/permission-contents: write/g)).toHaveLength(2);
+    expect(release.match(/permission-pull-requests: write/g)).toHaveLength(1);
     expect(release.match(/gh api "\/users\/\$\{APP_SLUG\}\[bot\]" --jq \.id/g)).toHaveLength(2);
     expect(release).not.toContain("RELEASE_APP_ID");
     expect(release).not.toMatch(/\bapp-id:/);
+  });
+
+  it("cada token do App pede somente as permissões necessárias ao seu ato", () => {
+    const abrePr = job(release, "abrir-pr-de-release");
+    const cortaTag = job(release, "cortar-tag");
+    const permissoes = (texto: string) =>
+      texto.match(/^\s+permission-[a-z-]+: write$/gm)?.map((linha) => linha.trim()).sort() ?? [];
+
+    expect(permissoes(abrePr)).toEqual([
+      "permission-contents: write",
+      "permission-pull-requests: write",
+    ]);
+    expect(permissoes(cortaTag)).toEqual(["permission-contents: write"]);
   });
 
   it("o job que cria a tag não recebe escrita do GITHUB_TOKEN", () => {
